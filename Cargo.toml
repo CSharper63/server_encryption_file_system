@@ -1,0 +1,20 @@
+[package]
+name = "encryption_server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+rocket = "0.5.0"
+jsonwebtoken = "9.2.0"
+base64 = "0.21.5"
+[dependencies.uuid]
+version = "1.6.1"
+features = [
+    "v4",                # Lets you generate random UUIDs
+    "fast-rng",          # Use a faster (but still sufficiently random) RNG
+    "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
+]
