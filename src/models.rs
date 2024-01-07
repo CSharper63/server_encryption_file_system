@@ -48,6 +48,20 @@ pub struct DirEntity {
     pub dirs: Vec<DirEntity>,
 }
 
+impl DirEntity {
+    pub fn create(&self) -> bool {
+        match fs::create_dir_all(&self.path) {
+            Ok(_) => {
+                return true;
+            }
+            Err(e) => {
+                eprintln!("Error while creating dir : {}", e);
+                return false;
+            }
+        };
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FileEntity {
     pub path: String,
@@ -59,6 +73,26 @@ pub struct FileEntity {
 impl FileEntity {
     pub fn decode_b64(str: &str) -> Vec<u8> {
         general_purpose::STANDARD.decode(str).unwrap()
+    }
+
+    pub fn create(&self) -> bool {
+        let path = Path::new(&self.path);
+
+        let mut file = match File::create(&path) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("Error while creating file : {}", e);
+                return false;
+            }
+        };
+
+        match file.write_all(&FileEntity::decode_b64(&self.encrypted_content.asset)) {
+            Ok(_) => return true,
+            Err(e) => {
+                eprintln!("Error while filling content : {}", e);
+                return false;
+            }
+        }
     }
 }
 

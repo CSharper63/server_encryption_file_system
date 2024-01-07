@@ -2,12 +2,12 @@ pub mod models;
 
 extern crate rocket;
 
-use models::{Database, User};
+use models::{Database, DirEntity, FileEntity, User};
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::*;
 use uuid::Uuid;
-
+// TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE
 /// Authentication status: None
 #[get("/get_salt/<username>")]
 pub fn get_salt(username: &str) -> status::Custom<String> {
@@ -60,11 +60,6 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
         }
     };
 
-    /*  return status::Custom(
-        Status::BadRequest,
-        format!("new user: {}", serde_json::to_string(&new_user).unwrap()),
-    ); */
-
     new_user.uid = Uuid::new_v4().to_string(); // set new PK for DB
 
     // verify that the user does not already exist
@@ -95,8 +90,28 @@ pub fn post_file(token: &str, file_as_str: &str) -> status::Custom<String> {
     let success = status::Custom(Status::Ok, "File successfully created".to_string());
 
     match Database::verify_token(token) {
-        //todo implement
-        Ok(_) => return success,
+        Ok(_) => {
+            // convert body to struct
+            let file: FileEntity = match serde_json::from_str(file_as_str) {
+                Ok(c) => c,
+                Err(e) => {
+                    return status::Custom(
+                        Status::BadRequest,
+                        format!(
+                            "error: {}. {}",
+                            e.to_string(),
+                            "Please provide me a json".to_string()
+                        ),
+                    )
+                }
+            };
+
+            if file.create() {
+                return success;
+            } else {
+                return generic_error;
+            }
+        }
         Err(_) => return generic_error,
     }
 }
@@ -111,7 +126,28 @@ pub fn post_dir(token: &str, dir_as_str: &str) -> status::Custom<String> {
     let success = status::Custom(Status::Ok, "Directory successfully created".to_string());
 
     match Database::verify_token(token) {
-        Ok(_) => return success, //todo implement
+        Ok(_) => {
+            // convert body to struct
+            let dir: DirEntity = match serde_json::from_str(dir_as_str) {
+                Ok(c) => c,
+                Err(e) => {
+                    return status::Custom(
+                        Status::BadRequest,
+                        format!(
+                            "error: {}. {}",
+                            e.to_string(),
+                            "Please provide me a json".to_string()
+                        ),
+                    )
+                }
+            };
+
+            if dir.create() {
+                return success;
+            } else {
+                return generic_error;
+            }
+        }
         Err(_) => return generic_error,
     }
 }
