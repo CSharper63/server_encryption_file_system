@@ -153,7 +153,47 @@ pub fn post_dir(token: &str, dir_as_str: &str) -> status::Custom<String> {
 }
 
 #[post("/auth/change_password?<token>", data = "<user>")]
-pub fn post_change_password(token: &str, user: &str) {}
+pub fn post_change_password(token: &str, user: &str) -> status::Custom<String> {
+    let generic_error = status::Custom(
+        Status::BadRequest,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    let success = status::Custom(Status::Ok, "Password updated successfully".to_string());
+
+    match Database::verify_token(token) {
+        Ok(verified_token) => {
+            // convert body to struct
+            let user_2_update: User = match serde_json::from_str(user) {
+                Ok(c) => c,
+                Err(e) => {
+                    return status::Custom(
+                        Status::BadRequest,
+                        format!(
+                            "error: {}. {}",
+                            e.to_string(),
+                            "Please provide me a json".to_string()
+                        ),
+                    )
+                }
+            };
+
+            if user_2_update.uid == verified_token.sub.uid {
+                match Database::change_password(user_2_update) {
+                    Ok(_) => {
+                        return success;
+                    }
+                    Err(_) => {
+                        return generic_error;
+                    }
+                };
+            } else {
+                return generic_error;
+            }
+        }
+        Err(_) => return generic_error,
+    }
+}
 
 #[launch]
 fn rocket() -> Rocket<Build> {

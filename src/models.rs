@@ -215,19 +215,53 @@ impl Database {
             Err(err) => Err(format!("Failed to decode JWT: {:?}", err)),
         }
     }
+
+    pub fn change_password(user_2_update: User) -> std::io::Result<()> {
+        let mut db_users = Self::get_all_users().unwrap();
+
+        if let Some(index) = db_users
+            .users
+            .iter()
+            .position(|user| user.uid == user_2_update.uid)
+        {
+            // update encrypted keys
+            db_users.users[index].clear_salt = user_2_update.clear_salt;
+            db_users.users[index].auth_key = user_2_update.auth_key;
+            db_users.users[index].encrypted_master_key = user_2_update.encrypted_master_key;
+            db_users.users[index].encrypted_private_key = user_2_update.encrypted_private_key;
+
+            let file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(Self::get_users_db_path())
+                .unwrap();
+
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &db_users).unwrap();
+            writer.flush().unwrap();
+
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "User not found",
+            ))
+        }
+    }
 }
 
 /// JWT Structures
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
-    exp: u64,
-    iss: String,
+    pub exp: u64,
+    pub iss: String,
     #[serde(flatten)]
-    sub: SubClaim,
+    pub sub: SubClaim,
 }
 
 #[derive(Serialize, Debug, Deserialize)]
-struct SubClaim {
-    uid: String,
-    username: String,
+pub struct SubClaim {
+    pub uid: String,
+    pub username: String,
 }
