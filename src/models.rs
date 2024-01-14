@@ -1,8 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::format,
     fs::{self, File, OpenOptions},
-    hash::Hash,
     io::{BufWriter, Write},
     path::Path,
 };
@@ -12,19 +10,14 @@ use jsonwebtoken::{
     Header, Validation,
 };
 
+use rocket::log::private::info;
 use serde::{Deserialize, Serialize};
 
 const SERVER_ROOT: &str = "vault";
 const USERS_DB: &str = "users.json";
-const METADATA: &str = "metadata.json";
 const USERS_DIR: &str = "users";
 // vault/users/USER_ID/metadata.json/
 // vault/users/USER_ID/data/CIPHER_DIR
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Metadata {
-    dirs: Vec<DirEntity>,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum DataStatus {
@@ -36,8 +29,9 @@ pub enum DataStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DataAsset {
     // can contain encrypted/decrypted data
-    pub asset: String,
-    pub nonce: String,
+    pub asset: Option<String>,
+    pub nonce: Option<String>,
+
     #[serde(skip_serializing)]
     pub status: Option<DataStatus>,
 }
@@ -52,25 +46,59 @@ pub struct User {
     pub public_key: String,
     pub private_key: DataAsset,
     // contains the file/folder
-    pub shared_to_others: Option<HashMap<String, String>>,
+    pub shared_to_others: Option<HashMap<String, String>>, // uid_
     pub shared_to_me: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RootTree {
+    #[serde(default)]
+    pub dirs: Option<Vec<DirEntity>>,
+    #[serde(default)]
+    pub files: Option<Vec<FileEntity>>,
+}
+
+impl RootTree {
+    pub fn to_string(&self) -> String {
+        serde_json::to_string_pretty(&self).unwrap()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DirEntity {
     // must be sent to the client while logged in
-    pub path: String,
+    // the root dir will contain top level dirs/files that will each get a key encrpyted with the user master key
+    pub path: Option<String>,
     pub name: DataAsset,
     pub key: DataAsset,
-    pub files: Vec<FileEntity>,
+    pub files: Option<Vec<FileEntity>>,
     pub dirs: Option<Vec<DirEntity>>,
 }
 
 impl DirEntity {
-    pub fn create(&self) -> bool {
-        match fs::create_dir_all(&self.path) {
+    pub fn create(&self, owner_id: &str) -> bool {
+        match fs::create_dir_all(&self.path.clone().unwrap()) {
             Ok(_) => {
-                // create metadata
+                // add it to metadata
+                info!("begin dir : {}", self.to_string());
+
+                // djashdjkashd/akjdhsajkd/dasjbdasjkdh
+                let mut tree: RootTree = Database::get_root_tree(owner_id).unwrap();
+                info!("begin tree : {}", tree.to_string());
+                let mut dirs = tree.dirs.unwrap();
+
+                Database::add_dir_to_tree(&mut dirs, &self.path.clone().unwrap(), self.clone());
+                tree.dirs = Some(dirs);
+                info!("end tree : {}", tree.to_string());
+
+                let file = OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(Database::get_user_metadata_path(owner_id))
+                    .unwrap();
+
+                let mut writer = BufWriter::new(file);
+                serde_json::to_writer(&mut writer, &tree).unwrap();
 
                 return true;
             }
@@ -82,11 +110,17 @@ impl DirEntity {
     }
 }
 
+impl DirEntity {
+    pub fn to_string(&self) -> String {
+        serde_json::to_string_pretty(&self).unwrap()
+    }
+}
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FileEntity {
     pub path: String,
     pub name: DataAsset,
     pub key: DataAsset,
+    #[serde(skip_serializing)]
     pub content: DataAsset,
 }
 impl FileEntity {
@@ -101,7 +135,7 @@ impl FileEntity {
             }
         };
 
-        match file.write_all(self.content.asset.clone().as_bytes()) {
+        match file.write_all(self.content.asset.clone().unwrap().as_bytes()) {
             Ok(_) => return true,
             Err(e) => {
                 eprintln!("Error while filling content : {}", e);
@@ -123,8 +157,14 @@ impl Database {
         format!("{}/{}", SERVER_ROOT, USERS_DB)
     }
 
-    pub fn get_user_metadata(uid: &str) -> String {
-        format!("{}/{}/{}/{}", SERVER_ROOT, USERS_DIR, uid, METADATA)
+    pub fn get_user_metadata_path(uid: &str) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            SERVER_ROOT,
+            USERS_DIR,
+            uid,
+            format!("{}.json", uid)
+        )
     }
 
     fn get_user_bucket(uid: &str) -> String {
@@ -140,6 +180,13 @@ impl Database {
 
         Ok(database)
     }
+
+    pub fn update_tree(uid: &str, root: &RootTree) {
+        let root_str = serde_json::to_string(root).unwrap();
+        fs::write(Database::get_user_metadata_path(uid), root_str.as_bytes())
+            .expect("Failed to update user root metadata")
+    }
+
     fn create_db_if_does_n_exist() {
         let server_root_path = Path::new(SERVER_ROOT);
 
@@ -158,18 +205,13 @@ impl Database {
     }
 
     // use to update the user metadata while adding a new file
-    /* fn add_to_dir_tree(uid: &str, file_entity: FileEntity) {
+    /* fn add_to_dir_tree(uid: &str, new_file: FileEntity) {
         // load content of the current metatadata for a "uid" user
-        let metadata_path = Database::get_user_metadata(uid);
-        let str_raw_metadata = std::fs::read_to_string(&metadata_path).unwrap();
-
-        // Deserialize string to Metadata struct
-        let mut metadata: Metadata =
-            serde_json::from_str(&str_raw_metadata).expect("Unable to deserialize metadata");
+        let tree = Database::get_root_tree(uid).unwrap();
 
         // Find the dir entity where add the file entity
-        let mut current_dir = &mut metadata.dirs;
-        for dir_name in file_entity.path.split('/') {
+        let mut current_dir = &mut tree.dirs;
+        for dir_name in new_file.path.split('/') {
             // check if not empty
             if !dir_name.is_empty() {
                 // if dir has been found
@@ -178,42 +220,23 @@ impl Database {
                         == dir_name.to_string()
                 }) {
                     current_dir = &mut found_dir.dirs.unwrap();
-                } /*  else {
-                        // check if needed
-                      let new_dir = DirEntity {
-                          path: format!("{}/{}", file_entity.path, dir_name),
-                          name: DataAsset {
-                              asset: Some(dir_name.into()),
-                              nonce: None,
-                              status: None,
-                          },
-                          key: DataAsset {
-                              asset: None,
-                              nonce: None,
-                              status: None,
-                          },
-                          files: Vec::new(),
-                          dirs: None,
-                      };
-                      current_dir.push(new_dir);
-                      current_dir = &mut current_dir.last_mut().unwrap().dirs.unwrap();
-                  } */
+                }
             }
         }
 
         // add the file in the the folder
-        if let Some(last_dir) = current_dir.last_mut() {
-            last_dir.files.push(file_entity);
+        if let Some(last_dir) = current_dir.unwrap().last_mut() {
+            last_dir.files.unwrap().push(new_file);
         }
 
         // update the metadata
         let updated_metadata_content =
-            serde_json::to_string(&metadata).expect("Unable to serialize metadata");
+            serde_json::to_string(&tree).expect("Unable to serialize metadata");
 
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
-            .open(metadata_path)
+            .open(Database::get_user_metadata_path(uid))
             .unwrap();
 
         let mut writer = BufWriter::new(file);
@@ -221,10 +244,101 @@ impl Database {
         writer.flush().unwrap();
     } */
 
+    pub fn add_dir_to_tree(dirs: &mut Vec<DirEntity>, path: &str, new_dir: DirEntity) {
+        info!(
+            "Début: {}\n {}\n\n\n\n {:?}",
+            path,
+            &new_dir.to_string(),
+            dirs
+        );
+
+        if path == "/" {
+            // Si le chemin est "/", nous ajoutons le nouveau répertoire à la racine
+            let name = new_dir.name.asset.clone().unwrap();
+            if !dirs
+                .iter()
+                .any(|dir| dir.name.asset.clone().unwrap() == name)
+            {
+                dirs.push(new_dir);
+            } else {
+                println!("Un répertoire avec le même nom existe déjà à la racine.");
+            }
+        } else {
+            let mut parts = path.split('/').peekable();
+            let current = parts.next().unwrap();
+
+            for dir in dirs {
+                let name = dir.name.asset.clone().unwrap();
+                if name == current.to_string() {
+                    if parts.peek().is_none() {
+                        // Nous sommes à la fin du chemin, donc nous ajoutons le nouveau répertoire ici
+                        info!("Deepest point");
+
+                        if let Some(sub_dirs) = &mut dir.dirs {
+                            sub_dirs.push(new_dir);
+                        } else {
+                            dir.dirs = Some(vec![new_dir]);
+                        }
+                    } else {
+                        // Nous ne sommes pas à la fin du chemin, donc nous continuons à descendre dans l'arborescence des répertoires
+                        info!("Deepest point does not reach");
+
+                        if let Some(sub_dirs) = &mut dir.dirs {
+                            Database::add_dir_to_tree(
+                                sub_dirs,
+                                parts.collect::<Vec<&str>>().join("/").as_str(),
+                                new_dir,
+                            );
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn init_root_tree(uid: &str) {
+        // by default three is no content in the root dir
+        let root_tree = RootTree {
+            dirs: Some(Vec::default()),
+            files: Some(Vec::default()),
+        };
+
+        let root_str = serde_json::to_string(&root_tree).unwrap();
+
+        // write metadata to User space
+        fs::write(Database::get_user_metadata_path(uid), root_str.as_bytes())
+            .expect("Failed to create user root metadata");
+    }
+
+    pub fn get_root_tree(uid: &str) -> Option<RootTree> {
+        let file_content = std::fs::read_to_string(&Database::get_user_metadata_path(uid)).unwrap();
+
+        let _: RootTree = match serde_json::from_str(&file_content) {
+            Ok(root_tree) => return Some(root_tree),
+            Err(_) => return None,
+        };
+    }
+
     pub fn get_user(username: &str) -> Option<User> {
+        info!("username to process: {}", username);
+
         if let Ok(database) = Self::get_all_users() {
             for user in database.users {
                 if user.username == username {
+                    return Some(user);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_user_by_id(uid: &str) -> Option<User> {
+        info!("username to process: {}", uid);
+
+        if let Ok(database) = Self::get_all_users() {
+            for user in database.users {
+                if user.uid == uid {
                     return Some(user);
                 }
             }
@@ -245,7 +359,9 @@ impl Database {
 
     pub fn add_user(new_user: User) -> std::io::Result<()> {
         let mut db_users = Self::get_all_users().unwrap();
-        db_users.users.push(new_user);
+        db_users.users.push(new_user.clone());
+
+        fs::create_dir_all(Database::get_user_bucket(&new_user.uid)).unwrap();
 
         let file = OpenOptions::new()
             .write(true)
@@ -263,7 +379,7 @@ impl Database {
         // TODO check if dir
 
         let user_bucket = Self::get_user_bucket(&owner.uid);
-        let folder_path = format!("{}/{}", user_bucket, dir.path);
+        let folder_path = format!("{}/{}", user_bucket, dir.path.unwrap());
 
         fs::create_dir_all(&folder_path).unwrap();
 
@@ -277,7 +393,7 @@ impl Database {
         let file_path = format!("{}/{}", user_bucket, file.path);
 
         let mut sysfile = File::create(&file_path)?;
-        sysfile.write_all(&file.content.asset.as_bytes().to_vec())?;
+        sysfile.write_all(&file.content.asset.unwrap().as_bytes().to_vec())?;
 
         Ok(())
     }
@@ -358,4 +474,9 @@ pub struct JwtClaims {
 pub struct SubClaim {
     pub uid: String,
     pub username: String,
+}
+
+fn is_dir_empty(path: &str) -> std::io::Result<bool> {
+    let mut entries = fs::read_dir(path)?;
+    Ok(entries.next().is_none())
 }
