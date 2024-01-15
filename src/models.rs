@@ -12,6 +12,8 @@ use jsonwebtoken::{
 
 use rocket::log::private::info;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, skip_serializing_none};
+use uuid::Uuid;
 
 const SERVER_ROOT: &str = "vault";
 const USERS_DB: &str = "users.json";
@@ -53,9 +55,7 @@ pub struct User {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RootTree {
     #[serde(default)]
-    pub dirs: Option<Vec<DirEntity>>,
-    #[serde(default)]
-    pub files: Option<Vec<FileEntity>>,
+    pub elements: Option<Vec<FsEntity>>, // contains Dir or Files
 }
 
 impl RootTree {
@@ -64,84 +64,75 @@ impl RootTree {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DirEntity {
+pub struct FsEntity {
     // must be sent to the client while logged in
     // the root dir will contain top level dirs/files that will each get a key encrpyted with the user master key
-    pub path: Option<String>,
-    pub name: DataAsset,
-    pub key: DataAsset,
-    pub files: Option<Vec<FileEntity>>,
-    pub dirs: Option<Vec<DirEntity>>,
-}
-
-impl DirEntity {
-    pub fn create(&self, owner_id: &str) -> bool {
-        match fs::create_dir_all(&self.path.clone().unwrap()) {
-            Ok(_) => {
-                // add it to metadata
-                info!("begin dir : {}", self.to_string());
-
-                // djashdjkashd/akjdhsajkd/dasjbdasjkdh
-                let mut tree: RootTree = Database::get_root_tree(owner_id).unwrap();
-                info!("begin tree : {}", tree.to_string());
-                let mut dirs = tree.dirs.unwrap();
-
-                Database::add_dir_to_tree(&mut dirs, &self.path.clone().unwrap(), self.clone());
-                tree.dirs = Some(dirs);
-                info!("end tree : {}", tree.to_string());
-
-                let file = OpenOptions::new()
-                    .write(true)
-                    .truncate(true)
-                    .open(Database::get_user_metadata_path(owner_id))
-                    .unwrap();
-
-                let mut writer = BufWriter::new(file);
-                serde_json::to_writer(&mut writer, &tree).unwrap();
-
-                return true;
-            }
-            Err(e) => {
-                eprintln!("Error while creating dir : {}", e);
-                return false;
-            }
-        };
-    }
-}
-
-impl DirEntity {
-    pub fn to_string(&self) -> String {
-        serde_json::to_string_pretty(&self).unwrap()
-    }
-}
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct FileEntity {
+    pub uid: String,
     pub path: String,
+    pub parent_id: String,
     pub name: DataAsset,
+    pub entity_type: String, // file or dir
     pub key: DataAsset,
-    #[serde(skip_serializing)]
-    pub content: DataAsset,
+    pub content: Option<String>, // only used for data transfer
 }
-impl FileEntity {
-    pub fn create(&self) -> bool {
-        let path = Path::new(&self.path);
 
-        let mut file = match File::create(&path) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("Error while creating file : {}", e);
-                return false;
-            }
-        };
+impl FsEntity {
+    pub fn create(&mut self, owner_id: &str) -> bool {
+        self.uid = Uuid::new_v4().to_string();
 
-        match file.write_all(self.content.asset.clone().unwrap().as_bytes()) {
-            Ok(_) => return true,
-            Err(e) => {
-                eprintln!("Error while filling content : {}", e);
-                return false;
+        if self.entity_type == "dir" {
+            match fs::create_dir_all(&self.path.clone()) {
+                Ok(_) => {
+                    // add it to metadata
+                    info!("begin dir : {}", self.to_string());
+
+                    // djashdjkashd/akjdhsajkd/dasjbdasjkdh
+
+                    Database::add_to_dir_tree(owner_id, self);
+                    /*
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .truncate(true)
+                        .open(Database::get_user_metadata_path(owner_id))
+                        .unwrap();
+
+                    let mut writer = BufWriter::new(file);
+                    serde_json::to_writer(&mut writer, &tree).unwrap(); */
+
+                    return true;
+                }
+                Err(e) => {
+                    eprintln!("Error while creating dir : {}", e);
+                    return false;
+                }
+            };
+        } else {
+            let path = Path::new(&self.path);
+
+            let mut file = match File::create(&path) {
+                Ok(file) => file,
+                Err(e) => {
+                    eprintln!("Error while creating file : {}", e);
+                    return false;
+                }
+            };
+
+            match file.write_all(self.content.clone().unwrap().as_bytes()) {
+                Ok(_) => return true,
+                Err(e) => {
+                    eprintln!("Error while filling content : {}", e);
+                    return false;
+                }
             }
         }
+    }
+}
+
+impl FsEntity {
+    pub fn to_string(&self) -> String {
+        serde_json::to_string_pretty(&self).unwrap()
     }
 }
 
@@ -185,6 +176,60 @@ impl Database {
         let root_str = serde_json::to_string(root).unwrap();
         fs::write(Database::get_user_metadata_path(uid), root_str.as_bytes())
             .expect("Failed to update user root metadata")
+    }
+
+    pub fn add_to_dir_tree(owner_id: &str, element: &FsEntity) -> Option<String> {
+        match Database::get_root_tree(owner_id) {
+            Some(mut root) => {
+                if let Some(elements) = &mut root.elements {
+                    elements.push(element.clone());
+                }
+                info!(
+                    "TREE: {}, {}",
+                    root.clone().to_string(),
+                    element.clone().to_string()
+                );
+
+                let root_str = serde_json::to_string(&root).unwrap();
+                fs::write(
+                    Database::get_user_metadata_path(owner_id),
+                    root_str.as_bytes(),
+                )
+                .expect("Failed to update user root metadata");
+                return Some(String::from("Element successfully added to tree"));
+            }
+            None => None,
+        }
+    }
+
+    pub fn get_elem_from_tree(owner_id: &str, element_id: &str) -> Option<FsEntity> {
+        match Database::get_root_tree(owner_id) {
+            Some(root) => {
+                for e in root.elements.unwrap().iter() {
+                    if e.uid == element_id {
+                        return Some(e.clone());
+                    }
+                }
+                return None;
+            }
+            None => return None,
+        }
+    }
+
+    pub fn get_children(owner_id: &str, parent_id: &str) -> Option<Vec<FsEntity>> {
+        match Database::get_root_tree(owner_id) {
+            Some(root) => {
+                let mut all_children: Vec<FsEntity> = Vec::default();
+                for e in root.elements.unwrap().iter() {
+                    if e.parent_id == parent_id {
+                        info!("We found something intersting");
+                        all_children.push(e.clone());
+                    }
+                }
+                return Some(all_children);
+            }
+            None => return None,
+        }
     }
 
     fn create_db_if_does_n_exist() {
@@ -244,64 +289,10 @@ impl Database {
         writer.flush().unwrap();
     } */
 
-    pub fn add_dir_to_tree(dirs: &mut Vec<DirEntity>, path: &str, new_dir: DirEntity) {
-        info!(
-            "Début: {}\n {}\n\n\n\n {:?}",
-            path,
-            &new_dir.to_string(),
-            dirs
-        );
-
-        if path == "/" {
-            // Si le chemin est "/", nous ajoutons le nouveau répertoire à la racine
-            let name = new_dir.name.asset.clone().unwrap();
-            if !dirs
-                .iter()
-                .any(|dir| dir.name.asset.clone().unwrap() == name)
-            {
-                dirs.push(new_dir);
-            } else {
-                println!("Un répertoire avec le même nom existe déjà à la racine.");
-            }
-        } else {
-            let mut parts = path.split('/').peekable();
-            let current = parts.next().unwrap();
-
-            for dir in dirs {
-                let name = dir.name.asset.clone().unwrap();
-                if name == current.to_string() {
-                    if parts.peek().is_none() {
-                        // Nous sommes à la fin du chemin, donc nous ajoutons le nouveau répertoire ici
-                        info!("Deepest point");
-
-                        if let Some(sub_dirs) = &mut dir.dirs {
-                            sub_dirs.push(new_dir);
-                        } else {
-                            dir.dirs = Some(vec![new_dir]);
-                        }
-                    } else {
-                        // Nous ne sommes pas à la fin du chemin, donc nous continuons à descendre dans l'arborescence des répertoires
-                        info!("Deepest point does not reach");
-
-                        if let Some(sub_dirs) = &mut dir.dirs {
-                            Database::add_dir_to_tree(
-                                sub_dirs,
-                                parts.collect::<Vec<&str>>().join("/").as_str(),
-                                new_dir,
-                            );
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
     pub fn init_root_tree(uid: &str) {
         // by default three is no content in the root dir
         let root_tree = RootTree {
-            dirs: Some(Vec::default()),
-            files: Some(Vec::default()),
+            elements: Some(Vec::default()),
         };
 
         let root_str = serde_json::to_string(&root_tree).unwrap();
@@ -348,7 +339,7 @@ impl Database {
 
     // use to get all files from a dir.
     //
-    pub fn get_dir(path: DirEntity) {
+    pub fn get_dir(path: FsEntity) {
         // get name from this path, then get the metadata from dir
         let server_root_path = Path::new(SERVER_ROOT);
 
@@ -375,18 +366,18 @@ impl Database {
         Ok(())
     }
 
-    pub fn create_folder(dir: DirEntity, owner: User) -> std::io::Result<()> {
+    pub fn create_folder(dir: FsEntity, owner: User) -> std::io::Result<()> {
         // TODO check if dir
 
         let user_bucket = Self::get_user_bucket(&owner.uid);
-        let folder_path = format!("{}/{}", user_bucket, dir.path.unwrap());
+        let folder_path = format!("{}/{}", user_bucket, dir.path);
 
         fs::create_dir_all(&folder_path).unwrap();
 
         Ok(())
     }
 
-    pub fn create_file(file: FileEntity, owner: User) -> std::io::Result<()> {
+    /*     pub fn create_file(file: FileEntity, owner: User) -> std::io::Result<()> {
         // TODO check if file
 
         let user_bucket = Self::get_user_bucket(&owner.uid);
@@ -396,7 +387,7 @@ impl Database {
         sysfile.write_all(&file.content.asset.unwrap().as_bytes().to_vec())?;
 
         Ok(())
-    }
+    } */
 
     pub fn generate_jwt(user: &User) -> Result<String, Error> {
         let claims = JwtClaims {

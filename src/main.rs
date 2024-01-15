@@ -5,7 +5,7 @@ extern crate rocket;
 use std::io::Write;
 
 use log::private::{debug, info};
-use models::{Database, DirEntity, FileEntity, RootTree, User};
+use models::{Database, FsEntity, RootTree, User};
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::*;
@@ -158,9 +158,9 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
     let success = status::Custom(Status::Ok, "File successfully created".to_string());
 
     match Database::verify_token(auth_token) {
-        Ok(_) => {
+        Ok(jwt) => {
             // convert body to struct
-            let file: FileEntity = match serde_json::from_str(file_as_str) {
+            let mut file: FsEntity = match serde_json::from_str(file_as_str) {
                 Ok(c) => c,
                 Err(e) => {
                     return status::Custom(
@@ -174,7 +174,7 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
                 }
             };
 
-            if file.create() {
+            if file.create(&jwt.sub.uid.clone()) {
                 // update the tree
                 // get the parent dir and add it into
 
@@ -197,7 +197,7 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
 
 #[post("/dir/create?<auth_token>", format = "json", data = "<dir_as_str>")]
 pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
-    let new_dir: DirEntity = serde_json::from_str(dir_as_str).unwrap();
+    let mut new_dir: FsEntity = serde_json::from_str(dir_as_str).unwrap();
     let generic_error = status::Custom(
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
@@ -306,6 +306,30 @@ pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     }
 }
 
+#[get("/dirs/get_children?<auth_token>&<parent_id>")]
+pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<String> {
+    let unauthorized_access = status::Custom(
+        Status::Unauthorized,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    let something_went_wrong =
+        status::Custom(Status::BadRequest, "Something went wrong".to_string());
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            match Database::get_children(&jwt.sub.uid, parent_id) {
+                Some(list_children) => {
+                    let tree_str = serde_json::to_string(&list_children).unwrap();
+                    return status::Custom(Status::Ok, tree_str);
+                }
+                None => return something_went_wrong,
+            };
+        }
+        Err(_) => return unauthorized_access,
+    }
+}
+
 #[post("/tree/update?<auth_token>", format = "json", data = "<updated_tree>")]
 pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
@@ -344,7 +368,8 @@ fn rocket() -> Rocket<Build> {
             post_file,
             post_change_password,
             get_my_tree,
-            post_tree
+            post_tree,
+            get_children
         ],
     )
 }
