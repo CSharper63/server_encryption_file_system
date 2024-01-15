@@ -48,7 +48,7 @@ pub struct User {
     pub public_key: String,
     pub private_key: DataAsset,
     // contains the file/folder
-    pub shared_to_others: Option<HashMap<String, String>>, // uid_
+    pub shared_to_others: Option<HashMap<String, String>>, // uid
     pub shared_to_me: Option<HashMap<String, String>>,
 }
 
@@ -82,8 +82,17 @@ impl FsEntity {
     pub fn create(&mut self, owner_id: &str) -> bool {
         self.uid = Uuid::new_v4().to_string();
 
+        let path_2_create = format!(
+            "{}{}/{}",
+            Database::get_user_bucket(owner_id),
+            &self.path.clone(),
+            &self.name.clone().asset.unwrap()
+        );
+
+        println!("{}", path_2_create.clone());
+
         if self.entity_type == "dir" {
-            match fs::create_dir_all(&self.path.clone()) {
+            match fs::create_dir_all(path_2_create) {
                 Ok(_) => {
                     // add it to metadata
                     info!("begin dir : {}", self.to_string());
@@ -184,11 +193,11 @@ impl Database {
                 if let Some(elements) = &mut root.elements {
                     elements.push(element.clone());
                 }
-                info!(
+                /* info!(
                     "TREE: {}, {}",
                     root.clone().to_string(),
                     element.clone().to_string()
-                );
+                ); */
 
                 let root_str = serde_json::to_string(&root).unwrap();
                 fs::write(
