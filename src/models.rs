@@ -64,7 +64,6 @@ impl RootTree {
     }
 }
 
-#[skip_serializing_none]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FsEntity {
     // must be sent to the client while logged in
@@ -75,7 +74,8 @@ pub struct FsEntity {
     pub name: DataAsset,
     pub entity_type: String, // file or dir
     pub key: DataAsset,
-    pub content: Option<String>, // only used for data transfer
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<DataAsset>, // only used for data transfer
 }
 
 impl FsEntity {
@@ -92,6 +92,7 @@ impl FsEntity {
         println!("{}", path_2_create.clone());
 
         if self.entity_type == "dir" {
+            // it s a dir
             match fs::create_dir_all(path_2_create) {
                 Ok(_) => {
                     // add it to metadata
@@ -118,28 +119,31 @@ impl FsEntity {
                 }
             };
         } else {
-            let path = Path::new(&self.path);
+            // it s a file
+            // create the file
+            fs::write(
+                &self.path,
+                bs58::decode(&self.content.clone().unwrap().asset.unwrap())
+                    .into_vec()
+                    .unwrap(),
+            )
+            .unwrap();
 
-            let mut file = match File::create(&path) {
-                Ok(file) => file,
-                Err(e) => {
-                    eprintln!("Error while creating file : {}", e);
-                    return false;
-                }
-            };
+            // remove content, keep nonce only
+            let content_nonce_only = Some(DataAsset {
+                asset: None,
+                nonce: self.content.clone().unwrap().nonce,
+                status: None,
+            });
 
-            match file.write_all(self.content.clone().unwrap().as_bytes()) {
-                Ok(_) => return true,
-                Err(e) => {
-                    eprintln!("Error while filling content : {}", e);
-                    return false;
-                }
-            }
+            self.content = content_nonce_only; // remove file content from struct
+
+            Database::add_to_dir_tree(owner_id, self);
+
+            true
         }
     }
-}
 
-impl FsEntity {
     pub fn to_string(&self) -> String {
         serde_json::to_string_pretty(&self).unwrap()
     }
