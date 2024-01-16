@@ -2,9 +2,7 @@ pub mod models;
 
 extern crate rocket;
 
-use std::io::Write;
-
-use log::private::{debug, info};
+use log::private::info;
 use models::{Database, FsEntity, RootTree, User};
 use rocket::http::Status;
 use rocket::response::status;
@@ -40,12 +38,6 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     hasher.update(decoded_auth_key);
     // hash digest into bs58 str
     let client_auth_key = bs58::encode(hasher.finalize()).into_string();
-
-    info!(
-        "Username: {}\nAuth key: {}",
-        username.clone(),
-        client_auth_key.clone()
-    );
 
     let db_user = match Database::get_user(username.as_str()) {
         Some(user) => user,
@@ -89,8 +81,6 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
             // convert body to struct
             match Database::get_user_by_id(&jwt.sub.uid) {
                 Some(user) => {
-                    info!("this the nonce {}", user.clone().master_key.nonce.unwrap());
-
                     return status::Custom(Status::Ok, serde_json::to_string(&user).unwrap());
                 }
                 None => return generic_error,
@@ -104,8 +94,6 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
 #[get("/get_sign_up", format = "json", data = "<new_user>")]
 pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to sign up".to_string());
-
-    println!("fetched user: {}", new_user);
 
     // convert body to struct
     let mut new_user: User = match serde_json::from_str(new_user) {
@@ -123,11 +111,7 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     };
 
     // sanitize username
-    info!("before sanitize: {}", new_user.username);
-
     new_user.username = remove_whitespace(new_user.username.to_lowercase().as_str());
-
-    info!("after sanitize: {}", new_user.username);
 
     new_user.uid = Uuid::new_v4().to_string(); // set new PK for DB
 
@@ -164,7 +148,7 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
 
 // when creating a file, the content won't be added in the metadata tree, the content will be directly stored in the file itself
 // so when the user log in his session, it fetch is whole tree which contains only the tree with each encrypted key. If the user the
-#[post("/file/create/<auth_token>", data = "<file_as_str>")]
+#[post("/file/create?<auth_token>", data = "<file_as_str>")]
 pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> {
     let generic_error = status::Custom(
         Status::BadRequest,
@@ -195,10 +179,14 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
 
                 return success;
             } else {
+                info!("Problem during file creation");
                 return generic_error;
             }
         }
-        Err(_) => return generic_error,
+        Err(_) => {
+            info!("User invalid token");
+            return generic_error;
+        }
     }
 }
 

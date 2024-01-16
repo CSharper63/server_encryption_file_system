@@ -82,12 +82,20 @@ impl FsEntity {
     pub fn create(&mut self, owner_id: &str) -> bool {
         self.uid = Uuid::new_v4().to_string();
 
-        let path_2_create = format!(
-            "{}{}/{}",
-            Database::get_user_bucket(owner_id),
-            &self.path.clone(),
-            &self.name.clone().asset.unwrap()
-        );
+        let path_2_create = if self.path.clone().is_empty() {
+            format!(
+                "{}/{}",
+                Database::get_user_bucket(owner_id),
+                &self.name.clone().asset.unwrap()
+            )
+        } else {
+            format!(
+                "{}/{}/{}",
+                Database::get_user_bucket(owner_id),
+                &self.path.clone(),
+                &self.name.clone().asset.unwrap()
+            )
+        };
 
         println!("{}", path_2_create.clone());
 
@@ -119,10 +127,30 @@ impl FsEntity {
                 }
             };
         } else {
+            info!("IT IT A FILE: {}", self.name.asset.clone().unwrap());
+            info!(
+                "Content: {}",
+                self.content.clone().unwrap().asset.clone().unwrap()
+            );
+
+            let path_2_create = if self.path.clone().is_empty() {
+                format!("{}", Database::get_user_bucket(owner_id),)
+            } else {
+                format!(
+                    "{}/{}",
+                    Database::get_user_bucket(owner_id),
+                    &self.path.clone(),
+                )
+            };
+
+            if !Path::new(path_2_create.clone().as_str()).exists() {
+                fs::create_dir_all(path_2_create.clone().as_str()).unwrap();
+            }
+
             // it s a file
             // create the file
             fs::write(
-                &self.path,
+                format!("{}/{}", path_2_create, self.name.clone().asset.unwrap()),
                 bs58::decode(&self.content.clone().unwrap().asset.unwrap())
                     .into_vec()
                     .unwrap(),
@@ -172,7 +200,7 @@ impl Database {
     }
 
     fn get_user_bucket(uid: &str) -> String {
-        format!("{}/{}/{}/bucket/", SERVER_ROOT, USERS_DIR, uid)
+        format!("{}/{}/{}/bucket", SERVER_ROOT, USERS_DIR, uid)
     }
 
     fn get_all_users() -> Result<Database, Box<dyn std::error::Error>> {
@@ -197,11 +225,6 @@ impl Database {
                 if let Some(elements) = &mut root.elements {
                     elements.push(element.clone());
                 }
-                /* info!(
-                    "TREE: {}, {}",
-                    root.clone().to_string(),
-                    element.clone().to_string()
-                ); */
 
                 let root_str = serde_json::to_string(&root).unwrap();
                 fs::write(
@@ -261,46 +284,6 @@ impl Database {
             fs::write(&file_path, initial_db_json).expect("Failed to create users database");
         }
     }
-
-    // use to update the user metadata while adding a new file
-    /* fn add_to_dir_tree(uid: &str, new_file: FileEntity) {
-        // load content of the current metatadata for a "uid" user
-        let tree = Database::get_root_tree(uid).unwrap();
-
-        // Find the dir entity where add the file entity
-        let mut current_dir = &mut tree.dirs;
-        for dir_name in new_file.path.split('/') {
-            // check if not empty
-            if !dir_name.is_empty() {
-                // if dir has been found
-                if let Some(found_dir) = current_dir.iter_mut().find(|dir| {
-                    String::from_utf8_lossy(dir.name.asset.unwrap().as_slice()).to_string()
-                        == dir_name.to_string()
-                }) {
-                    current_dir = &mut found_dir.dirs.unwrap();
-                }
-            }
-        }
-
-        // add the file in the the folder
-        if let Some(last_dir) = current_dir.unwrap().last_mut() {
-            last_dir.files.unwrap().push(new_file);
-        }
-
-        // update the metadata
-        let updated_metadata_content =
-            serde_json::to_string(&tree).expect("Unable to serialize metadata");
-
-        let file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(Database::get_user_metadata_path(uid))
-            .unwrap();
-
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, &updated_metadata_content).unwrap();
-        writer.flush().unwrap();
-    } */
 
     pub fn init_root_tree(uid: &str) {
         // by default three is no content in the root dir
