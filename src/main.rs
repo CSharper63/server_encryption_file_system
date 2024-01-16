@@ -9,6 +9,7 @@ use models::{Database, FsEntity, RootTree, User};
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::*;
+use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
 // TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE
@@ -33,10 +34,17 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     let username = remove_whitespace(&username.to_lowercase());
     let auth_key = auth_key.trim();
 
+    // hash the client auth key to check if the same as the stored server one.
+    let mut hasher = Sha3_256::new();
+    let decoded_auth_key = bs58::decode(auth_key).into_vec().unwrap();
+    hasher.update(decoded_auth_key);
+    // hash digest into bs58 str
+    let client_auth_key = bs58::encode(hasher.finalize()).into_string();
+
     info!(
         "Username: {}\nAuth key: {}",
         username.clone(),
-        auth_key.clone()
+        client_auth_key.clone()
     );
 
     let db_user = match Database::get_user(username.as_str()) {
@@ -46,9 +54,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
 
     // must check the auth key
     // must be encoded in base58
-    if auth_key == db_user.auth_key {
-        std::io::stdout().flush().unwrap();
-
+    if client_auth_key == db_user.auth_key {
         // must create a JWT
         match Database::generate_jwt(&db_user) {
             Ok(jwt) => return status::Custom(Status::Ok, jwt),
@@ -130,6 +136,15 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
         Some(_) => return generic_error,
         None => {}
     }
+
+    // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
+    // The attacker is unable to rollback the auth_key
+    let mut hasher = Sha3_256::new();
+    let decoded_auth_key = bs58::decode(new_user.clone().auth_key).into_vec().unwrap();
+    hasher.update(decoded_auth_key);
+
+    // hash digest into bs58 str
+    new_user.auth_key = bs58::encode(hasher.finalize()).into_string();
 
     // add user in db
     match Database::add_user(new_user.clone()) {
