@@ -294,15 +294,43 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
                     println!("Nothing to share");
                     return generic_error;
                 } else {
-                    // thing that I share, user I share with
-                    Database::share(&share);
-
                     let success = status::Custom(
                         Status::Ok,
                         format!("{} shared successfully", shares.unwrap().entity_type),
                     );
 
-                    return success;
+                    // thing that I share, user I share with
+                    match Database::share(&share) {
+                        Some(_) => return success,
+                        None => return generic_error,
+                    };
+                }
+            } else {
+                return generic_error;
+            }
+        }
+        Err(_) => return generic_error,
+    }
+}
+
+#[post("/revoke_share?<auth_token>", format = "json", data = "<sharing>")]
+pub fn revoke_access(auth_token: &str, sharing: &str) -> status::Custom<String> {
+    let generic_error = status::Custom(
+        Status::BadRequest,
+        "You are not authorized to perform this action".to_string(),
+    );
+    let shares: Sharing = serde_json::from_str(sharing).unwrap();
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            if jwt.sub.uid == shares.owner_id {
+                match Database::revoke_share(&shares.entity_uid, &shares.user_id, &shares.owner_id)
+                {
+                    Ok(_) => {
+                        let success = status::Custom(Status::Ok, format!("Revoked successfully"));
+                        return success;
+                    }
+                    Err(_) => return generic_error,
                 }
             } else {
                 return generic_error;
@@ -336,69 +364,6 @@ pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     }
 }
 
-/* #[get("/dir/get/<token>", data = "<dir_path>")]
-pub fn get_dir(token: &str, dir_path: &str) -> status::Custom<DirEntity> {
-    let generic_error = status::Custom(
-        Status::BadRequest,
-        "You are not authorized to perform this action".to_string(),
-    );
-    match Database::verify_token(token) {
-        Ok(jwt) => {
-            let user_id = jwt.sub.uid;
-
-            let dir = Database::get_dir(path);
-
-            return generic_error;
-        }
-        Err(_) => return generic_error,
-    }
-} */
-
-// TODO add get_public_key by username
-
-/* #[post("/auth/update_password?<auth_token>", data = "<user>")]
-pub fn post_change_password(token: &str, user: &str) -> status::Custom<String> {
-    let generic_error = status::Custom(
-        Status::BadRequest,
-        "You are not authorized to perform this action".to_string(),
-    );
-
-    let success = status::Custom(Status::Ok, "Password updated successfully".to_string());
-
-    match Database::verify_token(token) {
-        Ok(verified_token) => {
-            // convert body to struct
-            let user_2_update: User = match serde_json::from_str(user) {
-                Ok(c) => c,
-                Err(e) => {
-                    return status::Custom(
-                        Status::BadRequest,
-                        format!(
-                            "error: {}. {}",
-                            e.to_string(),
-                            "Please provide me a json".to_string()
-                        ),
-                    )
-                }
-            };
-
-            if user_2_update.uid == verified_token.sub.uid {
-                match Database::change_password(user_2_update) {
-                    Ok(_) => {
-                        return success;
-                    }
-                    Err(_) => {
-                        return generic_error;
-                    }
-                };
-            } else {
-                return generic_error;
-            }
-        }
-        Err(_) => return generic_error,
-    }
-}
- */
 #[get("/get_my_tree?<auth_token>")]
 pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
