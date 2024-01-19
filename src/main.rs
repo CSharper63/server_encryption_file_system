@@ -447,6 +447,43 @@ pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<S
     }
 }
 
+#[get(
+    "/dirs/get_shared_children?<auth_token>",
+    format = "json",
+    data = "<shares>"
+)]
+pub fn get_shared_children(auth_token: &str, shares: &str) -> status::Custom<String> {
+    let unauthorized_access = status::Custom(
+        Status::Unauthorized,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    let shares: Sharing = serde_json::from_str(shares).unwrap();
+
+    let something_went_wrong =
+        status::Custom(Status::BadRequest, "Something went wrong".to_string());
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            let has_access =
+                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid);
+
+            if !has_access {
+                return unauthorized_access;
+            }
+
+            match Database::get_children(&jwt.sub.uid, &shares.entity_uid) {
+                Some(list_children) => {
+                    let tree_str = serde_json::to_string(&list_children).unwrap();
+                    return status::Custom(Status::Ok, tree_str);
+                }
+                None => return something_went_wrong,
+            };
+        }
+        Err(_) => return unauthorized_access,
+    }
+}
+
 #[post("/tree/update?<auth_token>", format = "json", data = "<updated_tree>")]
 pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
@@ -474,12 +511,7 @@ fn remove_whitespace(s: &str) -> String {
 
 #[launch]
 fn rocket() -> Rocket<Build> {
-    let config = Config {
-        limits: Limits::default().limit("json", ByteUnit::Byte(1024 * 1024 * 1024)), // 1 Go en octets
-        ..Config::default()
-    };
-
-    custom(config)
+    build()
         .mount(
             "/",
             routes![

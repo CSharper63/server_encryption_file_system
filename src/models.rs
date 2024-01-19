@@ -107,7 +107,7 @@ impl FsEntity {
             )
         };
 
-        /*         println!("{}", path_2_create.clone());
+        /*         info!("{}", path_2_create.clone());
          */
         if self.entity_type == "dir" {
             // it s a dir
@@ -132,7 +132,7 @@ impl FsEntity {
                     return true;
                 }
                 Err(e) => {
-                    eprintln!("Error while creating dir : {}", e);
+                    info!("Error while creating dir : {}", e);
                     return false;
                 }
             };
@@ -360,6 +360,58 @@ impl Database {
         Some("Share added successfully".to_string())
     }
 
+    pub fn revoke_share(share_id: &str, user_id: &str, owner_id: &str) -> Result<(), String> {
+        let mut target_user = Database::get_user_by_id(user_id);
+        let mut owner_user = Database::get_user_by_id(owner_id);
+
+        // Check if both users are found
+        if let (Some(target), Some(owner)) = (&mut target_user, &mut owner_user) {
+            // Remove the share from target user's shared_to_me list
+            if let Some(shared_to_me) = target.shared_to_me.as_mut() {
+                shared_to_me.retain(|share| share.entity_uid != share_id);
+            }
+
+            // Remove the share from owner user's shared_to_others list
+            if let Some(shared_to_others) = owner.shared_to_others.as_mut() {
+                shared_to_others.retain(|share| share.entity_uid != share_id);
+            }
+
+            // Update the users in the database
+            let target_updated = Database::update_user(&target);
+            let owner_updated = Database::update_user(&owner);
+
+            // Return success
+
+            return if target_updated.is_ok() && owner_updated.is_ok() {
+                Ok(())
+            } else {
+                Err("Error while updating user".to_string())
+            };
+        } else {
+            // Return error if either user is not found
+            Err("User not found".to_string())
+        }
+    }
+
+    pub fn has_access_to_entity(user_id: &str, entity_id: &str) -> bool {
+        // Retrieve the user from the database using the user_id
+        if let Some(user) = Database::get_user_by_id(user_id) {
+            // Check if the user's shared_to_me field is initialized
+            if let Some(shared_to_me) = &user.shared_to_me {
+                // Iterate over the shared_to_me list
+                for share in shared_to_me {
+                    // Check if the current share's entity_uid matches the provided entity_id
+                    if share.entity_uid == entity_id {
+                        // If a match is found, return true indicating the user has access
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // If no match is found, or the user does not exist, return false
+        false
+    }
     pub fn get_user(username: &str) -> Option<User> {
         //info!("username to process: {}", username);
 
@@ -464,7 +516,7 @@ impl Database {
     pub fn change_password(user_2_update: User) -> std::io::Result<()> {
         let mut db_users = Self::get_all_users().unwrap();
 
-        println!("size: {} {}", db_users.users.len(), user_2_update.uid);
+        info!("size: {} {}", db_users.users.len(), user_2_update.uid);
 
         if let Some(index) = db_users
             .users
@@ -503,7 +555,7 @@ impl Database {
 }
 
 /// JWT Structures
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JwtClaims {
     pub exp: u64,
     pub iss: String,
@@ -511,7 +563,7 @@ pub struct JwtClaims {
     pub sub: SubClaim,
 }
 
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, Clone)]
 pub struct SubClaim {
     pub uid: String,
     pub username: String,
