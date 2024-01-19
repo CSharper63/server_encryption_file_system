@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
+    ops::Deref,
     path::Path,
 };
 
@@ -28,6 +29,15 @@ pub enum DataStatus {
     Decrypted,
 }
 
+// must verify that the shared entity is not already shared by parent
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Sharing {
+    pub key: String,
+    pub entity_uid: String, // shared entity
+    pub owner_id: String,   // owner that shared the entity
+    pub user_id: String,    // User id I share with
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DataAsset {
     // can contain encrypted/decrypted data
@@ -48,8 +58,8 @@ pub struct User {
     pub public_key: String,
     pub private_key: DataAsset,
     // contains the file/folder
-    pub shared_to_others: Option<HashMap<String, String>>, // uid
-    pub shared_to_me: Option<HashMap<String, String>>,
+    pub shared_to_others: Option<Vec<Sharing>>, // uid
+    pub shared_to_me: Option<Vec<Sharing>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -97,8 +107,8 @@ impl FsEntity {
             )
         };
 
-        println!("{}", path_2_create.clone());
-
+        /*         println!("{}", path_2_create.clone());
+         */
         if self.entity_type == "dir" {
             // it s a dir
             match fs::create_dir_all(path_2_create) {
@@ -306,9 +316,52 @@ impl Database {
             Err(_) => return None,
         };
     }
+    pub fn share(shares: &Sharing) -> Option<String> {
+        // get the target and the owner
+        let target_user = Database::get_user_by_id(&shares.user_id);
+        let owner_user = Database::get_user_by_id(&shares.owner_id);
+        let mut target_updated = false;
+        let mut owner_updated = false;
+        if let (Some(mut target), Some(mut owner)) = (target_user, owner_user) {
+            // Initialize vectors if they are None
+            target.shared_to_me.get_or_insert_with(Vec::new);
+            owner.shared_to_others.get_or_insert_with(Vec::new);
+
+            let target_shared_to_me = target.shared_to_me.as_mut().unwrap();
+            let owner_shared_to_others = owner.shared_to_others.as_mut().unwrap();
+
+            // Check and add share to target user if not exists
+            if !target_shared_to_me
+                .iter()
+                .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
+            {
+                target_shared_to_me.push(shares.clone());
+                target_updated = Database::update_user(&target).is_ok();
+            }
+
+            // Check and add share to owner user if not exists
+            if !owner_shared_to_others
+                .iter()
+                .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
+            {
+                owner_shared_to_others.push(shares.clone());
+                owner_updated = Database::update_user(&owner).is_ok();
+            }
+
+            if target_updated && owner_updated {
+                Some("Share successfully".to_string())
+            } else {
+                None
+            };
+        } else {
+            return None;
+        }
+
+        Some("Share added successfully".to_string())
+    }
 
     pub fn get_user(username: &str) -> Option<User> {
-        info!("username to process: {}", username);
+        //info!("username to process: {}", username);
 
         if let Ok(database) = Self::get_all_users() {
             for user in database.users {
@@ -321,7 +374,7 @@ impl Database {
     }
 
     pub fn get_user_by_id(uid: &str) -> Option<User> {
-        info!("username to process: {}", uid);
+        //info!("username to process: {}", uid);
 
         if let Ok(database) = Self::get_all_users() {
             for user in database.users {
@@ -331,17 +384,6 @@ impl Database {
             }
         }
         None
-    }
-
-    // use to get all files from a dir.
-    //
-    pub fn get_dir(path: FsEntity) {
-        // get name from this path, then get the metadata from dir
-        let server_root_path = Path::new(SERVER_ROOT);
-
-        if !server_root_path.exists() {
-            fs::create_dir_all(server_root_path).expect("Failed to create server root directory");
-        }
     }
 
     pub fn add_user(new_user: User) -> std::io::Result<()> {
@@ -362,28 +404,34 @@ impl Database {
         Ok(())
     }
 
-    pub fn create_folder(dir: FsEntity, owner: User) -> std::io::Result<()> {
-        // TODO check if dir
+    pub fn update_user(updated_user: &User) -> Result<(), ()> {
+        let mut db_users = Self::get_all_users().unwrap();
 
-        let user_bucket = Self::get_user_bucket(&owner.uid);
-        let folder_path = format!("{}/{}", user_bucket, dir.path);
+        // Find the user and update their details
+        if let Some(user) = db_users
+            .users
+            .iter_mut()
+            .find(|u| u.uid == updated_user.uid)
+        {
+            *user = updated_user.clone();
+        } else {
+            // Return an error if user not found
+            return Err(());
+        }
 
-        fs::create_dir_all(&folder_path).unwrap();
+        // Write the updated users list back to the database
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(Self::get_users_db_path())
+            .unwrap();
+
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &db_users).unwrap();
+        writer.flush().unwrap();
 
         Ok(())
     }
-
-    /*     pub fn create_file(file: FileEntity, owner: User) -> std::io::Result<()> {
-        // TODO check if file
-
-        let user_bucket = Self::get_user_bucket(&owner.uid);
-        let file_path = format!("{}/{}", user_bucket, file.path);
-
-        let mut sysfile = File::create(&file_path)?;
-        sysfile.write_all(&file.content.asset.unwrap().as_bytes().to_vec())?;
-
-        Ok(())
-    } */
 
     pub fn generate_jwt(user: &User) -> Result<String, Error> {
         let claims = JwtClaims {
@@ -416,15 +464,19 @@ impl Database {
     pub fn change_password(user_2_update: User) -> std::io::Result<()> {
         let mut db_users = Self::get_all_users().unwrap();
 
+        println!("size: {} {}", db_users.users.len(), user_2_update.uid);
+
         if let Some(index) = db_users
             .users
             .iter()
             .position(|user| user.uid == user_2_update.uid)
         {
+            info!("Go");
+
             // update encrypted keys
             db_users.users[index].clear_salt = user_2_update.clear_salt;
-            db_users.users[index].auth_key = user_2_update.auth_key;
             db_users.users[index].master_key = user_2_update.master_key;
+            db_users.users[index].auth_key = user_2_update.auth_key;
             db_users.users[index].private_key = user_2_update.private_key;
 
             let file = OpenOptions::new()
@@ -440,6 +492,8 @@ impl Database {
 
             Ok(())
         } else {
+            info!("Unable to find");
+
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "User not found",

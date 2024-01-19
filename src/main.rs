@@ -3,10 +3,11 @@ pub mod models;
 extern crate rocket;
 
 use log::private::info;
-use models::{Database, FsEntity, RootTree, User};
-use rocket::http::Status;
+use models::{Database, FsEntity, RootTree, Sharing, User};
+use rocket::data::ByteUnit;
 use rocket::response::status;
 use rocket::*;
+use rocket::{data::Limits, http::Status};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
@@ -87,6 +88,79 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
             };
         }
         Err(_) => return unauthorized_access,
+    }
+}
+
+#[post(
+    "/auth/update_password?<auth_token>",
+    format = "json",
+    data = "<updated_user>"
+)]
+pub fn post_update_password(auth_token: &str, updated_user: &str) -> status::Custom<String> {
+    let generic_error = status::Custom(Status::BadRequest, "Unable to sign up".to_string());
+
+    // convert body to struct
+    let mut updated_user: User = match serde_json::from_str(updated_user) {
+        Ok(c) => c,
+        Err(e) => {
+            return status::Custom(
+                Status::BadRequest,
+                format!(
+                    "error: {}. {}",
+                    e.to_string(),
+                    "Please provide me a json".to_string()
+                ),
+            )
+        }
+    };
+
+    match Database::verify_token(auth_token) {
+        Ok(_) => {
+            // convert body to struct
+            // verify that the user does not already exist
+            match Database::get_user(&updated_user.username) {
+                Some(_) => {
+                    // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
+                    // The attacker is unable to rollback the auth_key
+                    let mut hasher = Sha3_256::new();
+                    let decoded_auth_key = bs58::decode(updated_user.clone().auth_key)
+                        .into_vec()
+                        .unwrap();
+                    hasher.update(decoded_auth_key);
+
+                    // hash digest into bs58 str
+                    updated_user.auth_key = bs58::encode(hasher.finalize()).into_string();
+
+                    println!("UID: {}", updated_user.uid);
+
+                    // add user in db
+                    match Database::change_password(updated_user.clone()) {
+                        Ok(_) => {
+                            // after successfully add user, sent the JWT to access to the service
+                            match Database::generate_jwt(&updated_user) {
+                                Ok(jwt) => return status::Custom(Status::Ok, jwt),
+                                Err(_) => {
+                                    info!("Cannot generate jwt");
+                                    return generic_error;
+                                }
+                            };
+                        }
+                        Err(_) => {
+                            info!("Cannot change the password");
+                            return generic_error;
+                        }
+                    }
+                }
+                None => {
+                    info!("Invalid authentification token");
+                    return generic_error;
+                }
+            }
+        }
+        Err(_) => {
+            info!("User invalid token");
+            return generic_error;
+        }
     }
 }
 
@@ -198,6 +272,46 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
 
 // todo /share/username={}?auth_token={}?path={}?shared_key={}
 
+#[post("/share?<auth_token>", format = "json", data = "<sharing>")]
+pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
+    let share: Sharing = serde_json::from_str(sharing).unwrap();
+    let generic_error = status::Custom(
+        Status::BadRequest,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    // must check that the owner_id is the same as the jwt
+    // must check that the entity exist in the owner id bucket
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            // convert body to struct
+            if share.owner_id == jwt.sub.uid {
+                // add this sharing to the right user name
+
+                let shares = Database::get_elem_from_tree(&jwt.sub.uid, &share.entity_uid);
+
+                if shares.is_none() {
+                    println!("Nothing to share");
+                    return generic_error;
+                } else {
+                    // thing that I share, user I share with
+                    Database::share(&share);
+
+                    let success = status::Custom(
+                        Status::Ok,
+                        format!("{} shared successfully", shares.unwrap().entity_type),
+                    );
+
+                    return success;
+                }
+            } else {
+                return generic_error;
+            }
+        }
+        Err(_) => return generic_error,
+    }
+}
+
 #[post("/dir/create?<auth_token>", format = "json", data = "<dir_as_str>")]
 pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     let mut new_dir: FsEntity = serde_json::from_str(dir_as_str).unwrap();
@@ -242,7 +356,7 @@ pub fn get_dir(token: &str, dir_path: &str) -> status::Custom<DirEntity> {
 
 // TODO add get_public_key by username
 
-#[post("/auth/change_password?<token>", data = "<user>")]
+/* #[post("/auth/update_password?<auth_token>", data = "<user>")]
 pub fn post_change_password(token: &str, user: &str) -> status::Custom<String> {
     let generic_error = status::Custom(
         Status::BadRequest,
@@ -284,7 +398,7 @@ pub fn post_change_password(token: &str, user: &str) -> status::Custom<String> {
         Err(_) => return generic_error,
     }
 }
-
+ */
 #[get("/get_my_tree?<auth_token>")]
 pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
@@ -360,19 +474,26 @@ fn remove_whitespace(s: &str) -> String {
 
 #[launch]
 fn rocket() -> Rocket<Build> {
-    build().mount(
-        "/",
-        routes![
-            get_salt,
-            get_user,
-            get_sign_in,
-            get_sign_up,
-            post_dir,
-            post_file,
-            post_change_password,
-            get_my_tree,
-            post_tree,
-            get_children
-        ],
-    )
+    let config = Config {
+        limits: Limits::default().limit("json", ByteUnit::Byte(1024 * 1024 * 1024)), // 1 Go en octets
+        ..Config::default()
+    };
+
+    custom(config)
+        .mount(
+            "/",
+            routes![
+                get_salt,
+                get_user,
+                get_sign_in,
+                get_sign_up,
+                post_dir,
+                post_file,
+                post_update_password,
+                get_my_tree,
+                post_tree,
+                get_children
+            ],
+        )
+        .manage(Limits::new())
 }
