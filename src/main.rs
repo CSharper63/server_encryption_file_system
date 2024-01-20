@@ -3,7 +3,7 @@ pub mod models;
 extern crate rocket;
 
 use log::private::info;
-use models::{Database, FsEntity, RootTree, Sharing, User};
+use models::{Database, FsEntity, PublicKeyMaterial, RootTree, Sharing, User};
 use rocket::data::ByteUnit;
 use rocket::response::status;
 use rocket::*;
@@ -470,6 +470,32 @@ pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<S
     }
 }
 
+#[get("/auth/get_public_key?<auth_token>&<username>")]
+pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String> {
+    let unauthorized_access = status::Custom(
+        Status::Unauthorized,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => match Database::get_public_key(username) {
+            Some(public_key_material) => {
+                let pub_key = PublicKeyMaterial {
+                    owner_id: public_key_material.1,
+                    public_key: public_key_material.0,
+                };
+
+                return status::Custom(Status::Ok, serde_json::to_string(&pub_key).unwrap());
+            }
+            None => status::Custom(
+                Status::NotFound,
+                "User not found or public key unavailable".to_string(),
+            ),
+        },
+        Err(_) => return unauthorized_access,
+    }
+}
+
 fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -489,7 +515,10 @@ fn rocket() -> Rocket<Build> {
                 post_update_password,
                 get_my_tree,
                 post_tree,
-                get_children
+                get_children,
+                revoke_access,
+                post_share,
+                get_public_key
             ],
         )
         .manage(Limits::new())

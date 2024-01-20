@@ -62,6 +62,12 @@ pub struct User {
     pub shared_to_me: Option<Vec<Sharing>>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PublicKeyMaterial {
+    pub public_key: String,
+    pub owner_id: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RootTree {
     #[serde(default)]
@@ -483,6 +489,14 @@ impl Database {
         writer.flush().unwrap();
 
         Ok(())
+    }
+
+    pub fn get_public_key(username: &str) -> Option<(String, String)> {
+        if let Some(user) = Self::get_user(username) {
+            Some((user.public_key, user.uid))
+        } else {
+            None
+        }
     }
 
     pub fn generate_jwt(user: &User) -> Result<String, Error> {
