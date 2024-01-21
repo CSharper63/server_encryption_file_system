@@ -518,7 +518,8 @@ fn rocket() -> Rocket<Build> {
                 get_children,
                 revoke_access,
                 post_share,
-                get_public_key
+                get_public_key,
+                get_shared_children
             ],
         )
         .manage(Limits::new())
