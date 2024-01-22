@@ -2,12 +2,18 @@ pub mod models;
 
 extern crate rocket;
 
+use std::time::Duration;
+
 use blake2::Digest;
 
+use jsonwebtoken::Header;
 use log::private::info;
 use models::{Database, FsEntity, PublicKeyMaterial, RootTree, Sharing, User};
+use rocket::config::{CipherSuite, TlsConfig};
 use rocket::data::ByteUnit;
+use rocket::fairing::Fairing;
 use rocket::response::status;
+use rocket::shield::{Hsts, Shield};
 use rocket::*;
 use rocket::{data::Limits, http::Status};
 use uuid::Uuid;
@@ -439,9 +445,13 @@ pub fn get_shared_children(auth_token: &str, shares: &str) -> status::Custom<Str
                 return unauthorized_access;
             }
 
-            match Database::get_children(&jwt.sub.uid, &shares.entity_uid) {
+            info!("UID: {}", shares.clone().entity_uid);
+
+            match Database::get_children(&shares.owner_id, &shares.entity_uid) {
                 Some(list_children) => {
+                    info!("Taille de la liste: {}", list_children.len());
                     let tree_str = serde_json::to_string(&list_children).unwrap();
+
                     return status::Custom(Status::Ok, tree_str);
                 }
                 None => return something_went_wrong,
@@ -482,12 +492,10 @@ pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String
     match Database::verify_token(auth_token) {
         Ok(jwt) => match Database::get_public_key(username) {
             Some(public_key_material) => {
-                let pub_key = PublicKeyMaterial {
-                    owner_id: public_key_material.1,
-                    public_key: public_key_material.0,
-                };
-
-                return status::Custom(Status::Ok, serde_json::to_string(&pub_key).unwrap());
+                return status::Custom(
+                    Status::Ok,
+                    serde_json::to_string(&public_key_material).unwrap(),
+                );
             }
             None => status::Custom(
                 Status::NotFound,
@@ -504,7 +512,10 @@ fn remove_whitespace(s: &str) -> String {
 
 #[launch]
 fn rocket() -> Rocket<Build> {
-    build()
+    let max_age_two_years = rocket::time::Duration::new(63072000, 0);
+
+    rocket::build()
+        .attach(Shield::default().enable(Hsts::Enable(max_age_two_years))) // HSTS force HTTPS
         .mount(
             "/",
             routes![
