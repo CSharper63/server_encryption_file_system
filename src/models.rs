@@ -491,9 +491,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_public_key(username: &str) -> Option<(String, String)> {
+    pub fn get_public_key(username: &str) -> Option<PublicKeyMaterial> {
         if let Some(user) = Self::get_user(username) {
-            Some((user.public_key, user.uid))
+            Some(PublicKeyMaterial {
+                public_key: user.public_key,
+                owner_id: user.uid,
+            })
         } else {
             None
         }
