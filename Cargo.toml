@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
-rocket = "0.5.0"
+rocket = { version = "0.5.0-rc.4", features = ["tls"] }
 jsonwebtoken = "9.2.0"
 bs58 = "0.5.0"
 serde_with = "3.4.0"
