@@ -3,7 +3,7 @@ address = "127.0.0.1"
 port = 443
 
 [default.tls]
-certs = "certificates/api_ecdsa_certificate.crt"
+certs = "certificates/combined_certificates.crt"
 key = "certificates/api_ecdsa_private.key"
 prefer_server_cipher_order = true
 ciphers = [

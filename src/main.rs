@@ -535,5 +535,4 @@ fn rocket() -> Rocket<Build> {
                 get_shared_children
             ],
         )
-        .manage(Limits::new())
 }
