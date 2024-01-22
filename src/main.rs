@@ -2,13 +2,14 @@ pub mod models;
 
 extern crate rocket;
 
+use blake2::Digest;
+
 use log::private::info;
 use models::{Database, FsEntity, PublicKeyMaterial, RootTree, Sharing, User};
 use rocket::data::ByteUnit;
 use rocket::response::status;
 use rocket::*;
 use rocket::{data::Limits, http::Status};
-use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
 // TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE
@@ -34,7 +35,8 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     let auth_key = auth_key.trim();
 
     // hash the client auth key to check if the same as the stored server one.
-    let mut hasher = Sha3_256::new();
+
+    let mut hasher = blake2::Blake2s256::new();
     let decoded_auth_key = bs58::decode(auth_key).into_vec().unwrap();
     hasher.update(decoded_auth_key);
     // hash digest into bs58 str
@@ -122,7 +124,7 @@ pub fn post_update_password(auth_token: &str, updated_user: &str) -> status::Cus
                 Some(_) => {
                     // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
                     // The attacker is unable to rollback the auth_key
-                    let mut hasher = Sha3_256::new();
+                    let mut hasher = blake2::Blake2s256::new();
                     let decoded_auth_key = bs58::decode(updated_user.clone().auth_key)
                         .into_vec()
                         .unwrap();
@@ -197,7 +199,7 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
 
     // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
     // The attacker is unable to rollback the auth_key
-    let mut hasher = Sha3_256::new();
+    let mut hasher = blake2::Blake2s256::new();
     let decoded_auth_key = bs58::decode(new_user.clone().auth_key).into_vec().unwrap();
     hasher.update(decoded_auth_key);
 

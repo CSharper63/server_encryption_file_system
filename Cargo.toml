@@ -12,7 +12,7 @@ rocket = "0.5.0"
 jsonwebtoken = "9.2.0"
 bs58 = "0.5.0"
 serde_with = "3.4.0"
-sha3 = "0.10.8"
+blake2 = "0.10.6"
 [dependencies.uuid]
 version = "1.6.1"
 features = [
