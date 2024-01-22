@@ -284,6 +284,21 @@ impl Database {
         }
     }
 
+    pub fn get_entity(owner_id: &str, entity_id: &str) -> Option<FsEntity> {
+        match Database::get_root_tree(owner_id) {
+            Some(root) => {
+                for e in root.elements.unwrap().iter() {
+                    if e.uid == entity_id {
+                        info!("We found something intersting");
+                        return Some(e.clone());
+                    }
+                }
+                None
+            }
+            None => return None,
+        }
+    }
+
     fn create_db_if_does_n_exist() {
         let server_root_path = Path::new(SERVER_ROOT);
 

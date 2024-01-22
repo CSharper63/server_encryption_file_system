@@ -420,6 +420,38 @@ pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<S
     }
 }
 
+#[get("/get_shared_entity?<auth_token>", format = "json", data = "<shares>")]
+pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom<String> {
+    let unauthorized_access = status::Custom(
+        Status::Unauthorized,
+        "You are not authorized to perform this action".to_string(),
+    );
+    let shares: Sharing = serde_json::from_str(shares).unwrap();
+
+    let something_went_wrong =
+        status::Custom(Status::BadRequest, "Something went wrong".to_string());
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            let has_access =
+                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid);
+
+            if !has_access {
+                return unauthorized_access;
+            }
+
+            match Database::get_entity(&shares.owner_id, &shares.entity_uid) {
+                Some(entity) => {
+                    let tree_str = serde_json::to_string(&entity).unwrap();
+                    return status::Custom(Status::Ok, tree_str);
+                }
+                None => return something_went_wrong,
+            };
+        }
+        Err(_) => return unauthorized_access,
+    }
+}
+
 #[get(
     "/dirs/get_shared_children?<auth_token>",
     format = "json",
@@ -532,7 +564,8 @@ fn rocket() -> Rocket<Build> {
                 revoke_access,
                 post_share,
                 get_public_key,
-                get_shared_children
+                get_shared_children,
+                get_shared_entity
             ],
         )
 }
