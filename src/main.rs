@@ -2,21 +2,21 @@ pub mod models;
 
 extern crate rocket;
 
-use std::time::Duration;
-
 use blake2::Digest;
 
-use jsonwebtoken::Header;
 use log::private::info;
-use models::{Database, FsEntity, PublicKeyMaterial, RootTree, Sharing, User};
-use rocket::config::{CipherSuite, TlsConfig};
-use rocket::data::ByteUnit;
-use rocket::fairing::Fairing;
+use models::{Database, FsEntity, RootTree, Sharing, User};
+
+use hmac::{Hmac, Mac};
+use rocket::http::Status;
 use rocket::response::status;
 use rocket::shield::{Hsts, Shield};
 use rocket::*;
-use rocket::{data::Limits, http::Status};
+use sha2::Sha256;
 use uuid::Uuid;
+
+static CRYPTO_PEPPER: &str = "this_is_my_pepper"; // !! POC only, must be stored in HSM
+type HmacSha256 = Hmac<Sha256>;
 
 // TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE
 /// Authentication status: None
@@ -40,13 +40,18 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     let username = remove_whitespace(&username.to_lowercase());
     let auth_key = auth_key.trim();
 
-    // hash the client auth key to check if the same as the stored server one.
-
-    let mut hasher = blake2::Blake2s256::new();
+    // decode the auth key and verify the mac
     let decoded_auth_key = bs58::decode(auth_key).into_vec().unwrap();
-    hasher.update(decoded_auth_key);
-    // hash digest into bs58 str
-    let client_auth_key = bs58::encode(hasher.finalize()).into_string();
+
+    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
+        .expect("HMAC can take key of any size");
+    // create mac with the auth key and the paper
+    mac_auth_key.update(decoded_auth_key.as_slice());
+    let computed_mac = mac_auth_key.finalize();
+    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
+
+    // encode in base58, then verify the stored mac
+    let client_auth_key = bs58::encode(computed_mac).into_string();
 
     let db_user = match Database::get_user(username.as_str()) {
         Some(user) => user,
@@ -203,14 +208,18 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
         None => {}
     }
 
-    // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
-    // The attacker is unable to rollback the auth_key
-    let mut hasher = blake2::Blake2s256::new();
-    let decoded_auth_key = bs58::decode(new_user.clone().auth_key).into_vec().unwrap();
-    hasher.update(decoded_auth_key);
+    // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
+    let decoded_auth_key = bs58::decode(new_user.auth_key).into_vec().unwrap();
 
-    // hash digest into bs58 str
-    new_user.auth_key = bs58::encode(hasher.finalize()).into_string();
+    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
+        .expect("HMAC can take key of any size");
+    // create mac with the auth key and the paper
+    mac_auth_key.update(decoded_auth_key.as_slice());
+    let computed_mac = mac_auth_key.finalize();
+    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
+
+    // encode in base58, then verify the stored mac
+    new_user.auth_key = bs58::encode(computed_mac).into_string();
 
     // add user in db
     match Database::add_user(new_user.clone()) {
