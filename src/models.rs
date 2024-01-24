@@ -460,7 +460,8 @@ impl Database {
         None
     }
 
-    pub fn add_user(new_user: User) -> std::io::Result<()> {
+    pub fn add_user(new_user: &User) -> std::io::Result<()> {
+        info!("inserted hmac {}", new_user.auth_key);
         let mut db_users = Self::get_all_users().unwrap();
         db_users.users.push(new_user.clone());
 

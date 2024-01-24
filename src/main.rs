@@ -40,18 +40,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     let username = remove_whitespace(&username.to_lowercase());
     let auth_key = auth_key.trim();
 
-    // decode the auth key and verify the mac
-    let decoded_auth_key = bs58::decode(auth_key).into_vec().unwrap();
-
-    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
-        .expect("HMAC can take key of any size");
-    // create mac with the auth key and the paper
-    mac_auth_key.update(decoded_auth_key.as_slice());
-    let computed_mac = mac_auth_key.finalize();
-    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
-
     // encode in base58, then verify the stored mac
-    let client_auth_key = bs58::encode(computed_mac).into_string();
 
     let db_user = match Database::get_user(username.as_str()) {
         Some(user) => user,
@@ -60,7 +49,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
 
     // must check the auth key
     // must be encoded in base58
-    if client_auth_key == db_user.auth_key {
+    if !verify_hmac(auth_key) {
         // must create a JWT
         match Database::generate_jwt(&db_user) {
             Ok(jwt) => return status::Custom(Status::Ok, jwt),
@@ -105,11 +94,15 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
 }
 
 #[post(
-    "/auth/update_password?<auth_token>",
+    "/auth/update_password?<auth_token>&<former_auth_key>",
     format = "json",
     data = "<updated_user>"
 )]
-pub fn post_update_password(auth_token: &str, updated_user: &str) -> status::Custom<String> {
+pub fn post_update_password(
+    auth_token: &str,
+    updated_user: &str,
+    former_auth_key: &str,
+) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to sign up".to_string());
 
     // convert body to struct
@@ -128,23 +121,23 @@ pub fn post_update_password(auth_token: &str, updated_user: &str) -> status::Cus
     };
 
     match Database::verify_token(auth_token) {
-        Ok(_) => {
+        Ok(jwt) => {
             // convert body to struct
             // verify that the user does not already exist
-            match Database::get_user(&updated_user.username) {
-                Some(_) => {
-                    // hash the auth key -> case of data leak, as auth key must be sent to server and then hashed.
-                    // The attacker is unable to rollback the auth_key
-                    let mut hasher = blake2::Blake2s256::new();
-                    let decoded_auth_key = bs58::decode(updated_user.clone().auth_key)
-                        .into_vec()
-                        .unwrap();
-                    hasher.update(decoded_auth_key);
+            match Database::get_user_by_id(&jwt.sub.uid) {
+                Some(dbuser) => {
+                    let auth_key = generate_hmac(former_auth_key);
 
-                    // hash digest into bs58 str
-                    updated_user.auth_key = bs58::encode(hasher.finalize()).into_string();
+                    if dbuser.auth_key != auth_key {
+                        let generic_error = status::Custom(
+                            Status::BadRequest,
+                            "You are not authorized to perform this action".to_string(),
+                        );
+                        return generic_error;
+                    }
 
-                    println!("UID: {}", updated_user.uid);
+                    // encode in base58, then verify the stored mac
+                    updated_user.auth_key = generate_hmac(updated_user.auth_key.as_str());
 
                     // add user in db
                     match Database::change_password(updated_user.clone()) {
@@ -209,23 +202,19 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     }
 
     // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
-    let decoded_auth_key = bs58::decode(new_user.auth_key).into_vec().unwrap();
-
-    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
-        .expect("HMAC can take key of any size");
-    // create mac with the auth key and the paper
-    mac_auth_key.update(decoded_auth_key.as_slice());
-    let computed_mac = mac_auth_key.finalize();
-    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
 
     // encode in base58, then verify the stored mac
-    new_user.auth_key = bs58::encode(computed_mac).into_string();
+    new_user.auth_key = generate_hmac(new_user.auth_key.as_str());
+
+    info!("hmac: {}", new_user.auth_key);
 
     // add user in db
-    match Database::add_user(new_user.clone()) {
+    match Database::add_user(&new_user) {
         Ok(_) => {
+            info!("hmac: {}", new_user.auth_key);
+
             // init root tree
-            Database::init_root_tree(&new_user.uid);
+            Database::init_root_tree(new_user.uid.as_str());
 
             // after successfully add user, sent the JWT to access to the service
             match Database::generate_jwt(&new_user) {
@@ -553,6 +542,32 @@ pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String
 
 fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// return HMAC256 in base58 of a base58 value
+fn generate_hmac(val: &str) -> String {
+    let decoded_auth_key = bs58::decode(val).into_vec().unwrap();
+
+    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
+        .expect("HMAC can take key of any size");
+    // create mac with the auth key and the paper
+    mac_auth_key.update(decoded_auth_key.as_slice());
+    let computed_mac = mac_auth_key.finalize();
+    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
+
+    // encode in base58, then verify the stored mac
+    bs58::encode(computed_mac).into_string()
+}
+
+fn verify_hmac(val: &str) -> bool {
+    // decode the base 58
+    let mac_2_verify = bs58::decode(val).into_vec().unwrap();
+
+    // init mac
+    let mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
+        .expect("HMAC can take key of any size");
+    // verify
+    mac_auth_key.verify_slice(mac_2_verify.as_slice()).is_ok()
 }
 
 #[launch]
