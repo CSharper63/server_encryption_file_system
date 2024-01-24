@@ -453,11 +453,15 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
 }
 
 #[get(
-    "/dirs/get_shared_children?<auth_token>",
+    "/dirs/get_shared_children?<auth_token>&<sub_entity_id>",
     format = "json",
     data = "<shares>"
 )]
-pub fn get_shared_children(auth_token: &str, shares: &str) -> status::Custom<String> {
+pub fn get_shared_children(
+    auth_token: &str,
+    shares: &str,
+    sub_entity_id: &str,
+) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
         Status::Unauthorized,
         "You are not authorized to perform this action".to_string(),
@@ -479,7 +483,7 @@ pub fn get_shared_children(auth_token: &str, shares: &str) -> status::Custom<Str
 
             info!("UID: {}", shares.clone().entity_uid);
 
-            match Database::get_children(&shares.owner_id, &shares.entity_uid) {
+            match Database::get_children(&shares.owner_id, &sub_entity_id) {
                 Some(list_children) => {
                     info!("Taille de la liste: {}", list_children.len());
                     let tree_str = serde_json::to_string(&list_children).unwrap();

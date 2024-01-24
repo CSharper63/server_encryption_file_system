@@ -433,6 +433,7 @@ impl Database {
         // If no match is found, or the user does not exist, return false
         false
     }
+
     pub fn get_user(username: &str) -> Option<User> {
         //info!("username to process: {}", username);
 
