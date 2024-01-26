@@ -306,12 +306,23 @@ impl Database {
                     if e.clone().uid == entity_id {
                         info!("We found something intersting");
 
-                        return Some(format!(
-                            "{}/{}{}",
-                            Database::get_user_bucket(owner_id),
-                            e.path,
-                            e.name.asset.clone().unwrap()
-                        ));
+                        let path = if e.path.is_empty() {
+                            format!(
+                                "{}/{}{}",
+                                Database::get_user_bucket(owner_id),
+                                e.path,
+                                e.name.asset.clone().unwrap()
+                            )
+                        } else {
+                            format!(
+                                "{}/{}/{}",
+                                Database::get_user_bucket(owner_id),
+                                e.path,
+                                e.name.asset.clone().unwrap()
+                            )
+                        };
+
+                        return Some(path);
                     }
                 }
                 None
