@@ -19,6 +19,7 @@ use uuid::Uuid;
 const SERVER_ROOT: &str = "vault";
 const USERS_DB: &str = "users.json";
 const USERS_DIR: &str = "users";
+
 // vault/users/USER_ID/metadata.json/
 // vault/users/USER_ID/data/CIPHER_DIR
 
@@ -298,7 +299,26 @@ impl Database {
             None => return None,
         }
     }
+    pub fn get_entity_path(owner_id: &str, entity_id: &str) -> Option<String> {
+        match Database::get_root_tree(owner_id) {
+            Some(root) => {
+                for e in root.elements.unwrap().iter() {
+                    if e.clone().uid == entity_id {
+                        info!("We found something intersting");
 
+                        return Some(format!(
+                            "{}/{}{}",
+                            Database::get_user_bucket(owner_id),
+                            e.path,
+                            e.name.asset.clone().unwrap()
+                        ));
+                    }
+                }
+                None
+            }
+            None => return None,
+        }
+    }
     fn create_db_if_does_n_exist() {
         let server_root_path = Path::new(SERVER_ROOT);
 

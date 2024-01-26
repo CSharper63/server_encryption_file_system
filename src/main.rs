@@ -2,8 +2,6 @@ pub mod models;
 
 extern crate rocket;
 
-use blake2::Digest;
-
 use log::private::info;
 use models::{Database, FsEntity, RootTree, Sharing, User};
 
@@ -47,9 +45,11 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
         None => return generic_error,
     };
 
+    let auth_key = generate_hmac(auth_key);
+
     // must check the auth key
     // must be encoded in base58
-    if !verify_hmac(auth_key) {
+    if auth_key == db_user.auth_key {
         // must create a JWT
         match Database::generate_jwt(&db_user) {
             Ok(jwt) => return status::Custom(Status::Ok, jwt),
@@ -63,7 +63,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     } else {
         return status::Custom(
             Status::BadRequest,
-            format!("{}", "Does not match".to_string()),
+            format!("{}", "Invalid credentials".to_string()),
         );
     }
 }
@@ -267,6 +267,32 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
             info!("User invalid token");
             return generic_error;
         }
+    }
+}
+
+#[get("/file/get_content?<auth_token>&<file_id>&<owner_id>")]
+pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> status::Custom<String> {
+    let generic_error = status::Custom(
+        Status::BadRequest,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    match Database::verify_token(auth_token) {
+        Ok(jwt) => {
+            let path = Database::get_entity_path(owner_id, file_id);
+
+            info!("path : {}", path.clone().unwrap());
+
+            match std::fs::read(path.unwrap()) {
+                Ok(contents) => {
+                    //println!("Contenu du fichier : {}", contents);
+                    // return the content in bs58
+                    status::Custom(Status::Ok, bs58::encode(contents).into_string())
+                }
+                Err(e) => generic_error,
+            }
+        }
+        Err(_) => return generic_error,
     }
 }
 
@@ -593,7 +619,8 @@ fn rocket() -> Rocket<Build> {
                 post_share,
                 get_public_key,
                 get_shared_children,
-                get_shared_entity
+                get_shared_entity,
+                get_file_content
             ],
         )
 }
