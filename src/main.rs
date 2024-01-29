@@ -16,7 +16,7 @@ use uuid::Uuid;
 static CRYPTO_PEPPER: &str = "this_is_my_pepper"; // !! POC only, must be stored in HSM
 type HmacSha256 = Hmac<Sha256>;
 
-// TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE
+// TODO !!!!! REMOVE ERROR FROM PAYLOAD RESPONSE IN PROD
 /// Authentication status: None
 #[get("/auth/get_salt?<username>")]
 pub fn get_salt(username: &str) -> status::Custom<String> {
@@ -285,7 +285,6 @@ pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> stat
 
             match std::fs::read(path.unwrap()) {
                 Ok(contents) => {
-                    //println!("Contenu du fichier : {}", contents);
                     // return the content in bs58
                     status::Custom(Status::Ok, bs58::encode(contents).into_string())
                 }
@@ -295,14 +294,6 @@ pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> stat
         Err(_) => return generic_error,
     }
 }
-
-//todo  get_my_tree?auth_token=
-
-// todo file/get?token={}?path={}
-
-// todo /auth/get_public_key?username={}?auth_token={}
-
-// todo /share/username={}?auth_token={}?path={}?shared_key={}
 
 #[post("/share?<auth_token>", format = "json", data = "<sharing>")]
 pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
@@ -323,7 +314,7 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
                 let shares = Database::get_elem_from_tree(&jwt.sub.uid, &share.entity_uid);
 
                 if shares.is_none() {
-                    println!("Nothing to share");
+                    info!("Nothing to share");
                     return generic_error;
                 } else {
                     let success = status::Custom(

@@ -1,8 +1,6 @@
 use std::{
-    collections::HashMap,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{BufWriter, Write},
-    ops::Deref,
     path::Path,
 };
 
@@ -13,7 +11,6 @@ use jsonwebtoken::{
 
 use rocket::log::private::info;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, skip_serializing_none};
 use uuid::Uuid;
 
 const SERVER_ROOT: &str = "vault";
@@ -113,9 +110,6 @@ impl FsEntity {
                 &self.name.clone().asset.unwrap()
             )
         };
-
-        /*         info!("{}", path_2_create.clone());
-         */
         if self.entity_type == "dir" {
             // it s a dir
             match fs::create_dir_all(path_2_create) {
@@ -123,18 +117,7 @@ impl FsEntity {
                     // add it to metadata
                     info!("begin dir : {}", self.to_string());
 
-                    // djashdjkashd/akjdhsajkd/dasjbdasjkdh
-
                     Database::add_to_dir_tree(owner_id, self);
-                    /*
-                    let file = OpenOptions::new()
-                        .write(true)
-                        .truncate(true)
-                        .open(Database::get_user_metadata_path(owner_id))
-                        .unwrap();
-
-                    let mut writer = BufWriter::new(file);
-                    serde_json::to_writer(&mut writer, &tree).unwrap(); */
 
                     return true;
                 }
@@ -563,7 +546,7 @@ impl Database {
         encode(
             &Header::new(Algorithm::HS512),
             &claims,
-            &EncodingKey::from_secret("secret".as_ref()),
+            &EncodingKey::from_secret("secret".as_ref()), // !! POC only, must be stored in HSM
         )
     }
 
@@ -632,9 +615,4 @@ pub struct JwtClaims {
 pub struct SubClaim {
     pub uid: String,
     pub username: String,
-}
-
-fn is_dir_empty(path: &str) -> std::io::Result<bool> {
-    let mut entries = fs::read_dir(path)?;
-    Ok(entries.next().is_none())
 }
