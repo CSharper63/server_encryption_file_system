@@ -8,3 +8,8 @@ The security whitepaper is available [here](https://maxime.chantemargue.ch/proje
 > [!TIP]  
 > You can interact to the API running on this server [using the following client](https://github.com/CSharper63/client_encryption_file_system)
 
+## How to run
+```bash
+cargo run --release
+```
+
