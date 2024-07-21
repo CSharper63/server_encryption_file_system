@@ -66,6 +66,15 @@ pub struct PublicKeyMaterial {
     pub owner_id: String,
 }
 
+impl PublicKeyMaterial {
+    pub fn new(public_key: String, owner_id: String) -> Self {
+        PublicKeyMaterial {
+            public_key,
+            owner_id,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RootTree {
     #[serde(default)]
@@ -351,127 +360,117 @@ impl Database {
             Err(_) => return None,
         };
     }
-    pub fn share(shares: &Sharing) -> Option<String> {
-        // get the target and the owner
-        let target_user = Database::get_user_by_id(&shares.user_id);
-        let owner_user = Database::get_user_by_id(&shares.owner_id);
-        let mut target_updated = false;
-        let mut owner_updated = false;
-        if let (Some(mut target), Some(mut owner)) = (target_user, owner_user) {
-            // Initialize vectors if they are None
-            target.shared_to_me.get_or_insert_with(Vec::new);
-            owner.shared_to_others.get_or_insert_with(Vec::new);
+    pub fn share(shares: &Sharing) -> Result<(), Box<dyn std::error::Error>> {
+        let (Ok(mut target_user), Ok(mut owner_user)) = (
+            Database::get_user_by_id(&shares.user_id),
+            Database::get_user_by_id(&shares.owner_id),
+        ) else {
+            return Err("Cannot get user".into());
+        };
 
-            let target_shared_to_me = target.shared_to_me.as_mut().unwrap();
-            let owner_shared_to_others = owner.shared_to_others.as_mut().unwrap();
+        // Initialize vectors if they are None
+        target_user.shared_to_me.get_or_insert_with(Vec::new);
+        owner_user.shared_to_others.get_or_insert_with(Vec::new);
 
-            // Check and add share to target user if not exists
-            if !target_shared_to_me
-                .iter()
-                .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
-            {
-                target_shared_to_me.push(shares.clone());
-                target_updated = Database::update_user(&target).is_ok();
-            }
+        let (Some(target_shared_to_me), Some(owner_shared_to_others)) = (
+            target_user.shared_to_me.as_mut(),
+            owner_user.shared_to_others.as_mut(),
+        ) else {
+            return Err("Cannot get sharing list for users".into());
+        };
 
-            // Check and add share to owner user if not exists
-            if !owner_shared_to_others
-                .iter()
-                .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
-            {
-                owner_shared_to_others.push(shares.clone());
-                owner_updated = Database::update_user(&owner).is_ok();
-            }
-
-            if target_updated && owner_updated {
-                Some("Share successfully".to_string())
-            } else {
-                None
-            };
-        } else {
-            return None;
+        // Check and add share to target user if not exists
+        if !target_shared_to_me
+            .iter()
+            .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
+        {
+            target_shared_to_me.push(shares.clone());
+            Database::update_user(&target_user)?;
         }
 
-        Some("Share added successfully".to_string())
+        // Check and add share to owner user if not exists
+        if !owner_shared_to_others
+            .iter()
+            .any(|existing_share| existing_share.entity_uid == shares.entity_uid)
+        {
+            owner_shared_to_others.push(shares.clone());
+            Database::update_user(&owner_user)?;
+        }
+
+        Ok(())
     }
 
-    pub fn revoke_share(share_id: &str, user_id: &str, owner_id: &str) -> Result<(), String> {
-        let mut target_user = Database::get_user_by_id(user_id);
-        let mut owner_user = Database::get_user_by_id(owner_id);
-
+    pub fn revoke_share(
+        share_id: &str,
+        user_id: &str,
+        owner_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (Ok(mut target_user), Ok(mut owner_user)) = (
+            Database::get_user_by_id(user_id),
+            Database::get_user_by_id(owner_id),
+        ) else {
+            return Err("Cannot get user".into());
+        };
         // Check if both users are found
-        if let (Some(target), Some(owner)) = (&mut target_user, &mut owner_user) {
-            // Remove the share from target user's shared_to_me list
-            if let Some(shared_to_me) = target.shared_to_me.as_mut() {
-                shared_to_me.retain(|share| share.entity_uid != share_id);
-            }
+        // Remove the share from target user's shared_to_me list
+        if let Some(shared_to_me) = target_user.shared_to_me.as_mut() {
+            shared_to_me.retain(|share| share.entity_uid != share_id);
+        }
 
-            // Remove the share from owner user's shared_to_others list
-            if let Some(shared_to_others) = owner.shared_to_others.as_mut() {
-                shared_to_others.retain(|share| share.entity_uid != share_id);
-            }
+        // Remove the share from owner user's shared_to_others list
+        if let Some(shared_to_others) = owner_user.shared_to_others.as_mut() {
+            shared_to_others.retain(|share| share.entity_uid != share_id);
+        }
 
-            // Update the users in the database
-            let target_updated = Database::update_user(&target);
-            let owner_updated = Database::update_user(&owner);
+        // Update the users in the database
+        let target_updated = Database::update_user(&target_user);
+        let owner_updated = Database::update_user(&owner_user);
 
-            // Return success
-
-            return if target_updated.is_ok() && owner_updated.is_ok() {
-                Ok(())
-            } else {
-                Err("Error while updating user".to_string())
-            };
+        return if target_updated.is_ok() && owner_updated.is_ok() {
+            Ok(())
         } else {
-            // Return error if either user is not found
-            Err("User not found".to_string())
-        }
+            Err("Error while updating user".into())
+        };
     }
 
-    pub fn has_access_to_entity(user_id: &str, entity_id: &str) -> bool {
-        // Retrieve the user from the database using the user_id
-        if let Some(user) = Database::get_user_by_id(user_id) {
-            // Check if the user's shared_to_me field is initialized
-            if let Some(shared_to_me) = &user.shared_to_me {
-                // Iterate over the shared_to_me list
-                for share in shared_to_me {
-                    // Check if the current share's entity_uid matches the provided entity_id
-                    if share.entity_uid == entity_id {
-                        // If a match is found, return true indicating the user has access
-                        return true;
-                    }
-                }
-            }
-        }
+    pub fn has_access_to_entity(
+        user_id: &str,
+        entity_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let user = Database::get_user_by_id(user_id)?;
 
-        // If no match is found, or the user does not exist, return false
-        false
+        let Some(shared_to_me) = &user.shared_to_me else {
+            return Ok(false);
+        };
+
+        let Some(share) = shared_to_me.iter().find(|s| s.entity_uid == entity_id) else {
+            return Ok(false);
+        };
+
+        Ok(true)
     }
 
-    pub fn get_user(username: &str) -> Option<User> {
-        //info!("username to process: {}", username);
+    pub fn get_user(username: &str) -> Result<User, Box<dyn std::error::Error>> {
+        let Ok(db) = Self::get_all_users() else {
+            return Err("Database unreachable".into());
+        };
 
-        if let Ok(database) = Self::get_all_users() {
-            for user in database.users {
-                if user.username == username {
-                    return Some(user);
-                }
-            }
-        }
-        None
+        let Some(user) = db.users.iter().find(|u| u.username == username) else {
+            return Err("User not found".into());
+        };
+        Ok(*user)
     }
 
-    pub fn get_user_by_id(uid: &str) -> Option<User> {
-        //info!("username to process: {}", uid);
+    pub fn get_user_by_id(uid: &str) -> Result<User, Box<dyn std::error::Error>> {
+        let Ok(db) = Self::get_all_users() else {
+            return Err("Database unreachable".into());
+        };
 
-        if let Ok(database) = Self::get_all_users() {
-            for user in database.users {
-                if user.uid == uid {
-                    return Some(user);
-                }
-            }
-        }
-        None
+        let Some(user) = db.users.iter().find(|u| u.uid == uid) else {
+            return Err("User not found".into());
+        };
+
+        Ok(*user)
     }
 
     pub fn add_user(new_user: &User) -> std::io::Result<()> {
@@ -493,20 +492,18 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_user(updated_user: &User) -> Result<(), ()> {
-        let mut db_users = Self::get_all_users().unwrap();
+    pub fn update_user(updated_user: &User) -> Result<(), Box<dyn std::error::Error>> {
+        let mut db_users = Self::get_all_users()?;
 
-        // Find the user and update their details
-        if let Some(user) = db_users
+        let Some(user) = db_users
             .users
             .iter_mut()
             .find(|u| u.uid == updated_user.uid)
-        {
-            *user = updated_user.clone();
-        } else {
-            // Return an error if user not found
-            return Err(());
-        }
+        else {
+            return Err("Cannot update user".into());
+        };
+
+        *user = updated_user.clone();
 
         // Write the updated users list back to the database
         let file = OpenOptions::new()
@@ -516,21 +513,19 @@ impl Database {
             .unwrap();
 
         let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, &db_users).unwrap();
-        writer.flush().unwrap();
+        serde_json::to_writer(&mut writer, &db_users)?;
+        writer.flush()?;
 
         Ok(())
     }
 
-    pub fn get_public_key(username: &str) -> Option<PublicKeyMaterial> {
-        if let Some(user) = Self::get_user(username) {
-            Some(PublicKeyMaterial {
-                public_key: user.public_key,
-                owner_id: user.uid,
-            })
-        } else {
-            None
-        }
+    pub fn get_public_key(username: &str) -> Result<PublicKeyMaterial, Box<dyn std::error::Error>> {
+        let Ok(user) = Self::get_user(username) else {
+            return Err("No public key found".into());
+        };
+
+        let pk = PublicKeyMaterial::new(user.public_key, user.uid);
+        Ok(pk)
     }
 
     pub fn generate_jwt(user: &User) -> Result<String, Error> {
