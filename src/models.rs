@@ -458,7 +458,7 @@ impl Database {
         let Some(user) = db.users.iter().find(|u| u.username == username) else {
             return Err("User not found".into());
         };
-        Ok(*user)
+        Ok(user.clone())
     }
 
     pub fn get_user_by_id(uid: &str) -> Result<User, Box<dyn std::error::Error>> {
@@ -470,7 +470,7 @@ impl Database {
             return Err("User not found".into());
         };
 
-        Ok(*user)
+        Ok(user.clone())
     }
 
     pub fn add_user(new_user: &User) -> std::io::Result<()> {

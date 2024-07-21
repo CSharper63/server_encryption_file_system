@@ -24,8 +24,8 @@ pub fn get_salt(username: &str) -> status::Custom<String> {
     let username = remove_whitespace(username.to_lowercase().as_str());
 
     match Database::get_user(username.as_str()) {
-        Some(user) => return status::Custom(Status::Ok, user.clear_salt),
-        None => return generic_error,
+        Ok(user) => return status::Custom(Status::Ok, user.clear_salt),
+        Err(e) => return generic_error,
     };
 }
 
@@ -41,8 +41,8 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     // encode in base58, then verify the stored mac
 
     let db_user = match Database::get_user(username.as_str()) {
-        Some(user) => user,
-        None => return generic_error,
+        Ok(user) => user,
+        Err(e) => return generic_error,
     };
 
     let auth_key = generate_hmac(auth_key);
@@ -83,10 +83,10 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
         Ok(jwt) => {
             // convert body to struct
             match Database::get_user_by_id(&jwt.sub.uid) {
-                Some(user) => {
+                Ok(user) => {
                     return status::Custom(Status::Ok, serde_json::to_string(&user).unwrap());
                 }
-                None => return generic_error,
+                Err(e) => return generic_error,
             };
         }
         Err(_) => return unauthorized_access,
@@ -125,7 +125,7 @@ pub fn post_update_password(
             // convert body to struct
             // verify that the user does not already exist
             match Database::get_user_by_id(&jwt.sub.uid) {
-                Some(dbuser) => {
+                Ok(dbuser) => {
                     let auth_key = generate_hmac(former_auth_key);
 
                     if dbuser.auth_key != auth_key {
@@ -157,7 +157,7 @@ pub fn post_update_password(
                         }
                     }
                 }
-                None => {
+                Err(e) => {
                     info!("Invalid authentification token");
                     return generic_error;
                 }
@@ -197,8 +197,8 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
 
     // verify that the user does not already exist
     match Database::get_user(&new_user.username) {
-        Some(_) => return generic_error,
-        None => {}
+        Ok(_) => return generic_error,
+        Err(e) => {}
     }
 
     // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
@@ -324,8 +324,8 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
 
                     // thing that I share, user I share with
                     match Database::share(&share) {
-                        Some(_) => return success,
-                        None => return generic_error,
+                        Ok(_) => return success,
+                        Err(e) => return generic_error,
                     };
                 }
             } else {
@@ -448,8 +448,11 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
 
     match Database::verify_token(auth_token) {
         Ok(jwt) => {
-            let has_access =
-                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid);
+            let Ok(has_access) =
+                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
+            else {
+                return unauthorized_access;
+            };
 
             if !has_access {
                 return unauthorized_access;
@@ -489,8 +492,11 @@ pub fn get_shared_children(
 
     match Database::verify_token(auth_token) {
         Ok(jwt) => {
-            let has_access =
-                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid);
+            let Ok(has_access) =
+                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
+            else {
+                return unauthorized_access;
+            };
 
             if !has_access {
                 return unauthorized_access;
@@ -542,13 +548,13 @@ pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String
 
     match Database::verify_token(auth_token) {
         Ok(jwt) => match Database::get_public_key(username) {
-            Some(public_key_material) => {
+            Ok(public_key_material) => {
                 return status::Custom(
                     Status::Ok,
                     serde_json::to_string(&public_key_material).unwrap(),
                 );
             }
-            None => status::Custom(
+            Err(e) => status::Custom(
                 Status::NotFound,
                 "User not found or public key unavailable".to_string(),
             ),
