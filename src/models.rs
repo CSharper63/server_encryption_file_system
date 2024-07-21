@@ -21,7 +21,7 @@ const USERS_DIR: &str = "users";
 // vault/users/USER_ID/data/CIPHER_DIR
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum DataStatus {
+pub enum DataState {
     // allow to know if the current processed data are encrypted or not
     Encrypted,
     Decrypted,
@@ -43,7 +43,7 @@ pub struct DataAsset {
     pub nonce: Option<String>,
 
     #[serde(skip_serializing)]
-    pub status: Option<DataStatus>,
+    pub status: Option<DataState>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
