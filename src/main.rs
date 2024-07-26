@@ -2,7 +2,7 @@ pub mod models;
 
 extern crate rocket;
 
-use log::private::info;
+use log::private::{info, log};
 use models::{Database, FsEntity, RootTree, Sharing, User};
 
 use hmac::{Hmac, Mac};
@@ -23,10 +23,11 @@ pub fn get_salt(username: &str) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to get salt".to_string());
     let username = remove_whitespace(username.to_lowercase().as_str());
 
-    match Database::get_user(username.as_str()) {
-        Ok(user) => return status::Custom(Status::Ok, user.clear_salt),
-        Err(e) => return generic_error,
+    let Ok(user) = Database::get_user(username.as_str()) else {
+        return generic_error;
     };
+
+    return status::Custom(Status::Ok, user.clear_salt);
 }
 
 /// Authentication status: None
@@ -40,32 +41,23 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
 
     // encode in base58, then verify the stored mac
 
-    let db_user = match Database::get_user(username.as_str()) {
-        Ok(user) => user,
-        Err(e) => return generic_error,
+    let Ok(db_user) = Database::get_user(username.as_str()) else {
+        return generic_error;
     };
 
     let auth_key = generate_hmac(auth_key);
 
     // must check the auth key
     // must be encoded in base58
-    if auth_key == db_user.auth_key {
-        // must create a JWT
-        match Database::generate_jwt(&db_user) {
-            Ok(jwt) => return status::Custom(Status::Ok, jwt),
-            Err(e) => {
-                return status::Custom(
-                    Status::BadRequest,
-                    format!("{} , {}", e.to_string(), "Unable to sign in".to_string()),
-                )
-            }
-        };
-    } else {
-        return status::Custom(
-            Status::BadRequest,
-            format!("{}", "Invalid credentials".to_string()),
-        );
+    if auth_key != db_user.auth_key {
+        return status::Custom(Status::BadRequest, "Invalid credentials".to_string());
     }
+
+    let Ok(jwt) = Database::generate_jwt(&db_user) else {
+        return status::Custom(Status::BadRequest, "Unable to sign in".to_string());
+    };
+
+    status::Custom(Status::Ok, jwt)
 }
 
 /// Authentication status: None
@@ -79,18 +71,16 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
 
     // must check the auth key
     // must be encoded in base58
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            // convert body to struct
-            match Database::get_user_by_id(&jwt.sub.uid) {
-                Ok(user) => {
-                    return status::Custom(Status::Ok, serde_json::to_string(&user).unwrap());
-                }
-                Err(e) => return generic_error,
-            };
-        }
-        Err(_) => return unauthorized_access,
-    }
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
+
+    // convert body to struct
+    let Ok(user) = Database::get_user_by_id(&jwt.sub.uid) else {
+        return generic_error;
+    };
+
+    return status::Custom(Status::Ok, serde_json::to_string(&user).unwrap());
 }
 
 #[post(
@@ -103,91 +93,62 @@ pub fn post_update_password(
     updated_user: &str,
     former_auth_key: &str,
 ) -> status::Custom<String> {
+    // todo fix wrong message
     let generic_error = status::Custom(Status::BadRequest, "Unable to sign up".to_string());
+    let auth_error = status::Custom(
+        Status::BadRequest,
+        "You are not authorized to perform this action".to_string(),
+    );
+
+    let json_error = status::Custom(Status::BadRequest, "Please provide me a json".to_string());
 
     // convert body to struct
-    let mut updated_user: User = match serde_json::from_str(updated_user) {
-        Ok(c) => c,
-        Err(e) => {
-            return status::Custom(
-                Status::BadRequest,
-                format!(
-                    "error: {}. {}",
-                    e.to_string(),
-                    "Please provide me a json".to_string()
-                ),
-            )
-        }
+    let Ok(mut updated_user): Result<User, _> = serde_json::from_str(updated_user) else {
+        return json_error;
     };
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            // convert body to struct
-            // verify that the user does not already exist
-            match Database::get_user_by_id(&jwt.sub.uid) {
-                Ok(dbuser) => {
-                    let auth_key = generate_hmac(former_auth_key);
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        info!("User invalid token");
+        return generic_error;
+    };
 
-                    if dbuser.auth_key != auth_key {
-                        let generic_error = status::Custom(
-                            Status::BadRequest,
-                            "You are not authorized to perform this action".to_string(),
-                        );
-                        return generic_error;
-                    }
+    let Ok(dbuser) = Database::get_user_by_id(&jwt.sub.uid) else {
+        info!("Invalid authentification token");
+        return generic_error;
+    };
 
-                    // encode in base58, then verify the stored mac
-                    updated_user.auth_key = generate_hmac(updated_user.auth_key.as_str());
+    let auth_key = generate_hmac(former_auth_key);
 
-                    // add user in db
-                    match Database::change_password(updated_user.clone()) {
-                        Ok(_) => {
-                            // after successfully add user, sent the JWT to access to the service
-                            match Database::generate_jwt(&updated_user) {
-                                Ok(jwt) => return status::Custom(Status::Ok, jwt),
-                                Err(_) => {
-                                    info!("Cannot generate jwt");
-                                    return generic_error;
-                                }
-                            };
-                        }
-                        Err(_) => {
-                            info!("Cannot change the password");
-                            return generic_error;
-                        }
-                    }
-                }
-                Err(e) => {
-                    info!("Invalid authentification token");
-                    return generic_error;
-                }
-            }
-        }
-        Err(_) => {
-            info!("User invalid token");
-            return generic_error;
-        }
+    if dbuser.auth_key != auth_key {
+        return auth_error;
     }
+
+    // encode in base58, then verify the stored mac
+    updated_user.auth_key = generate_hmac(updated_user.auth_key.as_str());
+
+    // add user in db
+    let Ok(_) = Database::change_password(updated_user.clone()) else {
+        info!("Cannot change the password");
+        return generic_error;
+    };
+    // after successfully add user, sent the JWT to access to the service
+    let Ok(jwt) = Database::generate_jwt(&updated_user) else {
+        info!("Cannot generate jwt");
+        return generic_error;
+    };
+
+    return status::Custom(Status::Ok, jwt);
 }
 
 /// Authentication status: None
 #[get("/get_sign_up", format = "json", data = "<new_user>")]
 pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to sign up".to_string());
+    let json_error = status::Custom(Status::BadRequest, "Please provide me a json".to_string());
 
     // convert body to struct
-    let mut new_user: User = match serde_json::from_str(new_user) {
-        Ok(c) => c,
-        Err(e) => {
-            return status::Custom(
-                Status::BadRequest,
-                format!(
-                    "error: {}. {}",
-                    e.to_string(),
-                    "Please provide me a json".to_string()
-                ),
-            )
-        }
+    let Ok(mut new_user): Result<User, _> = serde_json::from_str(new_user) else {
+        return json_error;
     };
 
     // sanitize username
@@ -196,10 +157,9 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     new_user.uid = Uuid::new_v4().to_string(); // set new PK for DB
 
     // verify that the user does not already exist
-    match Database::get_user(&new_user.username) {
-        Ok(_) => return generic_error,
-        Err(e) => {}
-    }
+    let Err(_) = Database::get_user(&new_user.username) else {
+        return generic_error;
+    };
 
     // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
 
@@ -209,21 +169,23 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     info!("hmac: {}", new_user.auth_key);
 
     // add user in db
-    match Database::add_user(&new_user) {
-        Ok(_) => {
-            info!("hmac: {}", new_user.auth_key);
+    let Ok(_) = Database::add_user(&new_user) else {
+        return generic_error;
+    };
 
-            // init root tree
-            Database::init_root_tree(new_user.uid.as_str());
+    info!("hmac: {}", new_user.auth_key);
 
-            // after successfully add user, sent the JWT to access to the service
-            match Database::generate_jwt(&new_user) {
-                Ok(jwt) => return status::Custom(Status::Created, jwt),
-                Err(_) => return generic_error,
-            };
-        }
-        Err(_) => return generic_error,
-    }
+    // init root tree
+    let Ok(_) = Database::init_root_tree(new_user.uid.as_str()) else {
+        return generic_error;
+    };
+
+    // after successfully add user, sent the JWT to access to the service
+    let Ok(jwt) = Database::generate_jwt(&new_user) else {
+        return generic_error;
+    };
+
+    return status::Custom(Status::Created, jwt);
 }
 
 // when creating a file, the content won't be added in the metadata tree, the content will be directly stored in the file itself
@@ -236,37 +198,22 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
     );
     let success = status::Custom(Status::Ok, "File successfully created".to_string());
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            // convert body to struct
-            let mut file: FsEntity = match serde_json::from_str(file_as_str) {
-                Ok(c) => c,
-                Err(e) => {
-                    return status::Custom(
-                        Status::BadRequest,
-                        format!(
-                            "error: {}. {}",
-                            e.to_string(),
-                            "Please provide me a json".to_string()
-                        ),
-                    )
-                }
-            };
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return generic_error;
+    };
 
-            if file.create(&jwt.sub.uid.clone()) {
-                // update the tree
-                // get the parent dir and add it into
+    let Ok(mut file): Result<FsEntity, _> = serde_json::from_str(file_as_str) else {
+        return status::Custom(Status::BadRequest, "Please provide me a json".to_string());
+    };
 
-                return success;
-            } else {
-                info!("Problem during file creation");
-                return generic_error;
-            }
-        }
-        Err(_) => {
-            info!("User invalid token");
-            return generic_error;
-        }
+    if file.create(&jwt.sub.uid.clone()) {
+        // update the tree
+        // get the parent dir and add it into
+
+        return success;
+    } else {
+        info!("Problem during file creation");
+        return generic_error;
     }
 }
 
@@ -277,22 +224,21 @@ pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> stat
         "You are not authorized to perform this action".to_string(),
     );
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            let path = Database::get_entity_path(owner_id, file_id);
+    let Ok(_) = Database::verify_token(auth_token) else {
+        return generic_error;
+    };
 
-            info!("path : {}", path.clone().unwrap());
+    let Ok(path) = Database::get_entity_path(owner_id, file_id) else {
+        return generic_error;
+    };
 
-            match std::fs::read(path.unwrap()) {
-                Ok(contents) => {
-                    // return the content in bs58
-                    status::Custom(Status::Ok, bs58::encode(contents).into_string())
-                }
-                Err(e) => generic_error,
-            }
-        }
-        Err(_) => return generic_error,
-    }
+    info!("path : {}", path);
+
+    let Ok(contents) = std::fs::read(path) else {
+        return generic_error;
+    };
+
+    status::Custom(Status::Ok, bs58::encode(contents).into_string())
 }
 
 #[post("/share?<auth_token>", format = "json", data = "<sharing>")]
@@ -302,38 +248,27 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return generic_error;
+    };
 
-    // must check that the owner_id is the same as the jwt
-    // must check that the entity exist in the owner id bucket
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            // convert body to struct
-            if share.owner_id == jwt.sub.uid {
-                // add this sharing to the right user name
+    if share.owner_id != jwt.sub.uid {
+        return generic_error;
+    };
 
-                let shares = Database::get_elem_from_tree(&jwt.sub.uid, &share.entity_uid);
+    // add this sharing to the right user name
 
-                if shares.is_none() {
-                    info!("Nothing to share");
-                    return generic_error;
-                } else {
-                    let success = status::Custom(
-                        Status::Ok,
-                        format!("{} shared successfully", shares.unwrap().entity_type),
-                    );
+    let Ok(shares) = Database::get_elem_from_tree(&jwt.sub.uid, &share.entity_uid) else {
+        info!("Nothing to share");
+        return generic_error;
+    };
 
-                    // thing that I share, user I share with
-                    match Database::share(&share) {
-                        Ok(_) => return success,
-                        Err(e) => return generic_error,
-                    };
-                }
-            } else {
-                return generic_error;
-            }
-        }
-        Err(_) => return generic_error,
-    }
+    let success = status::Custom(
+        Status::Ok,
+        format!("{} shared successfully", shares.entity_type),
+    );
+
+    return success;
 }
 
 #[post("/revoke_share?<auth_token>", format = "json", data = "<sharing>")]
@@ -342,25 +277,23 @@ pub fn revoke_access(auth_token: &str, sharing: &str) -> status::Custom<String> 
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
+
     let shares: Sharing = serde_json::from_str(sharing).unwrap();
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            if jwt.sub.uid == shares.owner_id {
-                match Database::revoke_share(&shares.entity_uid, &shares.user_id, &shares.owner_id)
-                {
-                    Ok(_) => {
-                        let success = status::Custom(Status::Ok, format!("Revoked successfully"));
-                        return success;
-                    }
-                    Err(_) => return generic_error,
-                }
-            } else {
-                return generic_error;
-            }
-        }
-        Err(_) => return generic_error,
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return generic_error;
+    };
+
+    if jwt.sub.uid != shares.owner_id {
+        return generic_error;
     }
+
+    let Ok(_) = Database::revoke_share(&shares.entity_uid, &shares.user_id, &shares.owner_id)
+    else {
+        return generic_error;
+    };
+    let success = status::Custom(Status::Ok, format!("Revoked successfully"));
+    return success;
 }
 
 #[post("/dir/create?<auth_token>", format = "json", data = "<dir_as_str>")]
@@ -372,18 +305,14 @@ pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     );
 
     let success = status::Custom(Status::Ok, "Directory successfully created".to_string());
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return generic_error;
+    };
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            // convert body to struct
-
-            if new_dir.create(&jwt.sub.uid) {
-                return success;
-            } else {
-                return generic_error;
-            }
-        }
-        Err(_) => return generic_error,
+    if new_dir.create(&jwt.sub.uid) {
+        return success;
+    } else {
+        return generic_error;
     }
 }
 
@@ -397,18 +326,17 @@ pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            match Database::get_root_tree(&jwt.sub.uid) {
-                Some(tree) => {
-                    let tree_str = serde_json::to_string(&tree).unwrap();
-                    return status::Custom(Status::Ok, tree_str);
-                }
-                None => return something_went_wrong,
-            };
-        }
-        Err(_) => return unauthorized_access,
-    }
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
+
+    let Ok(tree) = Database::get_root_tree(&jwt.sub.uid) else {
+        return something_went_wrong;
+    };
+
+    let tree_str = serde_json::to_string(&tree).unwrap();
+
+    return status::Custom(Status::Ok, tree_str);
 }
 
 #[get("/dirs/get_children?<auth_token>&<parent_id>")]
@@ -421,18 +349,16 @@ pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<S
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            match Database::get_children(&jwt.sub.uid, parent_id) {
-                Some(list_children) => {
-                    let tree_str = serde_json::to_string(&list_children).unwrap();
-                    return status::Custom(Status::Ok, tree_str);
-                }
-                None => return something_went_wrong,
-            };
-        }
-        Err(_) => return unauthorized_access,
-    }
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
+
+    let Ok(list_children) = Database::get_children(&jwt.sub.uid, parent_id) else {
+        return something_went_wrong;
+    };
+
+    let tree_str = serde_json::to_string(&list_children).unwrap();
+    return status::Custom(Status::Ok, tree_str);
 }
 
 #[get("/get_shared_entity?<auth_token>", format = "json", data = "<shares>")]
@@ -446,28 +372,25 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            let Ok(has_access) =
-                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
-            else {
-                return unauthorized_access;
-            };
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
 
-            if !has_access {
-                return unauthorized_access;
-            }
+    let Ok(has_access) = Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
+    else {
+        return unauthorized_access;
+    };
 
-            match Database::get_entity(&shares.owner_id, &shares.entity_uid) {
-                Some(entity) => {
-                    let tree_str = serde_json::to_string(&entity).unwrap();
-                    return status::Custom(Status::Ok, tree_str);
-                }
-                None => return something_went_wrong,
-            };
-        }
-        Err(_) => return unauthorized_access,
+    if !has_access {
+        return unauthorized_access;
     }
+
+    let Ok(entity) = Database::get_entity(&shares.owner_id, &shares.entity_uid) else {
+        return something_went_wrong;
+    };
+
+    let tree_str = serde_json::to_string(&entity).unwrap();
+    return status::Custom(Status::Ok, tree_str);
 }
 
 #[get(
@@ -490,32 +413,28 @@ pub fn get_shared_children(
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => {
-            let Ok(has_access) =
-                Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
-            else {
-                return unauthorized_access;
-            };
+    let Ok(jwt) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
 
-            if !has_access {
-                return unauthorized_access;
-            }
+    let Ok(has_access) = Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
+    else {
+        return unauthorized_access;
+    };
 
-            info!("UID: {}", shares.clone().entity_uid);
-
-            match Database::get_children(&shares.owner_id, &sub_entity_id) {
-                Some(list_children) => {
-                    info!("Taille de la liste: {}", list_children.len());
-                    let tree_str = serde_json::to_string(&list_children).unwrap();
-
-                    return status::Custom(Status::Ok, tree_str);
-                }
-                None => return something_went_wrong,
-            };
-        }
-        Err(_) => return unauthorized_access,
+    if !has_access {
+        return unauthorized_access;
     }
+
+    info!("UID: {}", shares.clone().entity_uid);
+
+    let Ok(list_children) = Database::get_children(&shares.owner_id, &sub_entity_id) else {
+        return something_went_wrong;
+    };
+
+    let tree_str = serde_json::to_string(&list_children).unwrap();
+
+    return status::Custom(Status::Ok, tree_str);
 }
 
 #[post("/tree/update?<auth_token>", format = "json", data = "<updated_tree>")]
@@ -524,9 +443,6 @@ pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<S
         Status::Unauthorized,
         "You are not authorized to perform this action".to_string(),
     );
-
-    let something_went_wrong =
-        status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
     let root_tree: RootTree = serde_json::from_str(updated_tree).unwrap();
 
@@ -546,21 +462,21 @@ pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String
         "You are not authorized to perform this action".to_string(),
     );
 
-    match Database::verify_token(auth_token) {
-        Ok(jwt) => match Database::get_public_key(username) {
-            Ok(public_key_material) => {
-                return status::Custom(
-                    Status::Ok,
-                    serde_json::to_string(&public_key_material).unwrap(),
-                );
-            }
-            Err(e) => status::Custom(
-                Status::NotFound,
-                "User not found or public key unavailable".to_string(),
-            ),
-        },
-        Err(_) => return unauthorized_access,
-    }
+    let Ok(_) = Database::verify_token(auth_token) else {
+        return unauthorized_access;
+    };
+
+    let Ok(public_key_material) = Database::get_public_key(username) else {
+        return status::Custom(
+            Status::NotFound,
+            "User not found or public key unavailable".to_string(),
+        );
+    };
+
+    return status::Custom(
+        Status::Ok,
+        serde_json::to_string(&public_key_material).unwrap(),
+    );
 }
 
 fn remove_whitespace(s: &str) -> String {
@@ -580,17 +496,6 @@ fn generate_hmac(val: &str) -> String {
 
     // encode in base58, then verify the stored mac
     bs58::encode(computed_mac).into_string()
-}
-
-fn verify_hmac(val: &str) -> bool {
-    // decode the base 58
-    let mac_2_verify = bs58::decode(val).into_vec().unwrap();
-
-    // init mac
-    let mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
-        .expect("HMAC can take key of any size");
-    // verify
-    mac_auth_key.verify_slice(mac_2_verify.as_slice()).is_ok()
 }
 
 #[launch]
