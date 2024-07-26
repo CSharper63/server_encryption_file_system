@@ -228,99 +228,101 @@ impl Database {
             .expect("Failed to update user root metadata")
     }
 
-    pub fn add_to_dir_tree(owner_id: &str, element: &FsEntity) -> Option<String> {
-        match Database::get_root_tree(owner_id) {
-            Some(mut root) => {
-                if let Some(elements) = &mut root.elements {
-                    elements.push(element.clone());
-                }
+    pub fn add_to_dir_tree(
+        owner_id: &str,
+        element: &FsEntity,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut root = Database::get_root_tree(owner_id)?;
 
-                let root_str = serde_json::to_string(&root).unwrap();
-                fs::write(
-                    Database::get_user_metadata_path(owner_id),
-                    root_str.as_bytes(),
-                )
-                .expect("Failed to update user root metadata");
-                return Some(String::from("Element successfully added to tree"));
-            }
-            None => None,
+        if let Some(elements) = &mut root.elements {
+            elements.push(element.clone());
         }
+
+        let root_str = serde_json::to_string(&root).unwrap();
+        fs::write(
+            Database::get_user_metadata_path(owner_id),
+            root_str.as_bytes(),
+        )
+        .expect("Failed to update user root metadata");
+        return Ok(String::from("Element successfully added to tree"));
     }
 
-    pub fn get_elem_from_tree(owner_id: &str, element_id: &str) -> Option<FsEntity> {
-        match Database::get_root_tree(owner_id) {
-            Some(root) => {
-                for e in root.elements.unwrap().iter() {
-                    if e.uid == element_id {
-                        return Some(e.clone());
-                    }
-                }
-                return None;
+    pub fn get_elem_from_tree(
+        owner_id: &str,
+        element_id: &str,
+    ) -> Result<FsEntity, Box<dyn std::error::Error>> {
+        let root = Database::get_root_tree(owner_id)?;
+        for e in root.elements.unwrap().iter() {
+            if e.uid == element_id {
+                return Ok(e.clone());
             }
-            None => return None,
         }
+
+        return Err("Cannot get the element".into());
     }
 
-    pub fn get_children(owner_id: &str, parent_id: &str) -> Option<Vec<FsEntity>> {
-        match Database::get_root_tree(owner_id) {
-            Some(root) => {
-                let mut all_children: Vec<FsEntity> = Vec::default();
-                for e in root.elements.unwrap().iter() {
-                    if e.parent_id == parent_id {
-                        info!("We found something intersting");
-                        all_children.push(e.clone());
-                    }
-                }
-                return Some(all_children);
+    pub fn get_children(
+        owner_id: &str,
+        parent_id: &str,
+    ) -> Result<Vec<FsEntity>, Box<dyn std::error::Error>> {
+        let root = Database::get_root_tree(owner_id)?;
+        let mut all_children: Vec<FsEntity> = Vec::default();
+
+        for e in root.elements.unwrap().iter() {
+            if e.parent_id == parent_id {
+                info!("We found something intersting");
+                all_children.push(e.clone());
             }
-            None => return None,
         }
+
+        return Ok(all_children);
     }
 
-    pub fn get_entity(owner_id: &str, entity_id: &str) -> Option<FsEntity> {
-        match Database::get_root_tree(owner_id) {
-            Some(root) => {
-                for e in root.elements.unwrap().iter() {
-                    if e.uid == entity_id {
-                        info!("We found something intersting");
-                        return Some(e.clone());
-                    }
-                }
-                None
+    pub fn get_entity(
+        owner_id: &str,
+        entity_id: &str,
+    ) -> Result<FsEntity, Box<dyn std::error::Error>> {
+        let root = Database::get_root_tree(owner_id)?;
+
+        for e in root.elements.unwrap().iter() {
+            if e.uid == entity_id {
+                info!("We found something intersting");
+                return Ok(e.clone());
             }
-            None => return None,
         }
+
+        return Err("Cannot get the entity".into());
     }
-    pub fn get_entity_path(owner_id: &str, entity_id: &str) -> Option<String> {
-        match Database::get_root_tree(owner_id) {
-            Some(root) => {
-                for e in root.elements.unwrap().iter() {
-                    if e.clone().uid == entity_id {
-                        info!("We found something intersting");
+    pub fn get_entity_path(
+        owner_id: &str,
+        entity_id: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let root = Database::get_root_tree(owner_id)?;
 
-                        let path = if e.path.is_empty() {
-                            format!(
-                                "{}/{}{}",
-                                Database::get_user_bucket(owner_id),
-                                e.path,
-                                e.name.asset.clone().unwrap()
-                            )
-                        } else {
-                            format!(
-                                "{}/{}/{}",
-                                Database::get_user_bucket(owner_id),
-                                e.path,
-                                e.name.asset.clone().unwrap()
-                            )
-                        };
+        for e in root.elements.unwrap().iter() {
+            if e.clone().uid == entity_id {
+                info!("We found something intersting");
 
-                        return Some(path);
-                    }
-                }
-                None
+                let path = if e.path.is_empty() {
+                    format!(
+                        "{}/{}{}",
+                        Database::get_user_bucket(owner_id),
+                        e.path,
+                        e.name.asset.clone().unwrap()
+                    )
+                } else {
+                    format!(
+                        "{}/{}/{}",
+                        Database::get_user_bucket(owner_id),
+                        e.path,
+                        e.name.asset.clone().unwrap()
+                    )
+                };
+
+                return Ok(path);
             }
-            None => return None,
         }
+        return Err("Cannot find entity path".into());
     }
     fn create_db_if_does_n_exist() {
         let server_root_path = Path::new(SERVER_ROOT);
@@ -339,26 +341,29 @@ impl Database {
         }
     }
 
-    pub fn init_root_tree(uid: &str) {
+    pub fn init_root_tree(uid: &str) -> Result<(), Box<dyn std::error::Error>> {
         // by default three is no content in the root dir
         let root_tree = RootTree {
             elements: Some(Vec::default()),
         };
 
-        let root_str = serde_json::to_string(&root_tree).unwrap();
+        let root_str = serde_json::to_string(&root_tree)?;
 
         // write metadata to User space
         fs::write(Database::get_user_metadata_path(uid), root_str.as_bytes())
             .expect("Failed to create user root metadata");
+
+        Ok(())
     }
 
-    pub fn get_root_tree(uid: &str) -> Option<RootTree> {
+    pub fn get_root_tree(uid: &str) -> Result<RootTree, Box<dyn std::error::Error>> {
         let file_content = std::fs::read_to_string(&Database::get_user_metadata_path(uid)).unwrap();
 
-        let _: RootTree = match serde_json::from_str(&file_content) {
-            Ok(root_tree) => return Some(root_tree),
-            Err(_) => return None,
+        let Ok(tree) = serde_json::from_str(&file_content) else {
+            return Err("Cannot get the root tree".into());
         };
+
+        Ok(tree)
     }
     pub fn share(shares: &Sharing) -> Result<(), Box<dyn std::error::Error>> {
         let (Ok(mut target_user), Ok(mut owner_user)) = (
@@ -443,7 +448,7 @@ impl Database {
             return Ok(false);
         };
 
-        let Some(share) = shared_to_me.iter().find(|s| s.entity_uid == entity_id) else {
+        let Some(_) = shared_to_me.iter().find(|s| s.entity_uid == entity_id) else {
             return Ok(false);
         };
 
@@ -473,12 +478,12 @@ impl Database {
         Ok(user.clone())
     }
 
-    pub fn add_user(new_user: &User) -> std::io::Result<()> {
+    pub fn add_user(new_user: &User) -> Result<(), Box<dyn std::error::Error>> {
         info!("inserted hmac {}", new_user.auth_key);
-        let mut db_users = Self::get_all_users().unwrap();
+        let mut db_users = Self::get_all_users()?;
         db_users.users.push(new_user.clone());
 
-        fs::create_dir_all(Database::get_user_bucket(&new_user.uid)).unwrap();
+        fs::create_dir_all(Database::get_user_bucket(&new_user.uid))?;
 
         let file = OpenOptions::new()
             .write(true)
@@ -487,7 +492,7 @@ impl Database {
             .unwrap();
 
         let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, &db_users).unwrap();
+        serde_json::to_writer(&mut writer, &db_users)?;
         writer.flush().unwrap();
         Ok(())
     }
@@ -556,7 +561,7 @@ impl Database {
         }
     }
 
-    pub fn change_password(user_2_update: User) -> std::io::Result<()> {
+    pub fn change_password(user_2_update: User) -> Result<(), Box<dyn std::error::Error>> {
         let mut db_users = Self::get_all_users().unwrap();
 
         info!("size: {} {}", db_users.users.len(), user_2_update.uid);
@@ -589,10 +594,7 @@ impl Database {
         } else {
             info!("Unable to find");
 
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "User not found",
-            ))
+            Err("User not found".into())
         }
     }
 }
