@@ -17,6 +17,9 @@ const SERVER_ROOT: &str = "vault";
 const USERS_DB: &str = "users.json";
 const USERS_DIR: &str = "users";
 
+// !! THIS MUST BE SET IN ENV VARIABLE AND NOT PUSHED IN PROD ENV LIKE THIS
+const JWT_SECRET_KEY: &str = "this_is_my_secret_symm_key";
+
 // vault/users/USER_ID/metadata.json/
 // vault/users/USER_ID/data/CIPHER_DIR
 
@@ -544,25 +547,26 @@ impl Database {
         };
 
         encode(
-            &Header::new(Algorithm::HS512),
+            &Header::new(Algorithm::HS256),
             &claims,
-            &EncodingKey::from_secret("secret".as_ref()), // !! POC only, must be stored in HSM
+            &EncodingKey::from_secret(JWT_SECRET_KEY.as_ref()), // !! POC only, must be stored in HSM
         )
     }
 
     pub fn verify_token(token: &str) -> Result<JwtClaims, String> {
-        match decode::<JwtClaims>(
+        let Ok(decoded) = decode::<JwtClaims>(
             &token,
-            &DecodingKey::from_secret("secret".as_ref()),
-            &Validation::new(Algorithm::HS512),
-        ) {
-            Ok(decoded) => Ok(decoded.claims),
-            Err(err) => Err(format!("Failed to decode JWT: {:?}", err)),
-        }
+            &DecodingKey::from_secret(JWT_SECRET_KEY.as_ref()),
+            &Validation::new(Algorithm::HS256),
+        ) else {
+            return Err("Failed to decode JWT".into());
+        };
+
+        Ok(decoded.claims)
     }
 
     pub fn change_password(user_2_update: User) -> Result<(), Box<dyn std::error::Error>> {
-        let mut db_users = Self::get_all_users().unwrap();
+        let mut db_users = Self::get_all_users()?;
 
         info!("size: {} {}", db_users.users.len(), user_2_update.uid);
 
@@ -583,12 +587,11 @@ impl Database {
                 .write(true)
                 .truncate(true)
                 .create(true)
-                .open(Self::get_users_db_path())
-                .unwrap();
+                .open(Self::get_users_db_path())?;
 
             let mut writer = BufWriter::new(file);
-            serde_json::to_writer(&mut writer, &db_users).unwrap();
-            writer.flush().unwrap();
+            serde_json::to_writer(&mut writer, &db_users)?;
+            writer.flush()?;
 
             Ok(())
         } else {
