@@ -1,13 +1,17 @@
 use log::private::{info, log};
-use models::{Database, FsEntity, RootTree, Sharing, User};
 
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::*;
 use uuid::Uuid;
 
-use crate::models;
+use crate::models::auth;
+use crate::models::data_asset::Sharing;
+use crate::models::database::{Database, RootTree};
+use crate::models::fs_entity::FsEntity;
+use crate::models::user::User;
 
+// !! THIS MUST BE SET IN SECRET ENV VARIABLE AND NOT PUSHED IN PROD ENV LIKE THIS
 const CRYPTO_PEPPER: &[u8; 32] = b"01234567891011121314151617181920";
 
 /// Authentication status: None
@@ -59,7 +63,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
         username
     );
 
-    let Ok(jwt) = Database::generate_jwt(&db_user) else {
+    let Ok(jwt) = auth::JwtClaims::generate_jwt(&db_user) else {
         return generic_error;
     };
 
@@ -79,7 +83,7 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
 
     // must check the auth key
     // must be encoded in base58
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         log!(
             log::private::Level::Error,
             "get_user, JWT invalid, uneverified access"
@@ -121,7 +125,7 @@ pub fn post_update_password(
         return json_error;
     };
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         info!("User invalid token");
         return generic_error;
     };
@@ -146,7 +150,7 @@ pub fn post_update_password(
         return generic_error;
     };
     // after successfully add user, sent the JWT to access to the service
-    let Ok(jwt) = Database::generate_jwt(&updated_user) else {
+    let Ok(jwt) = auth::JwtClaims::generate_jwt(&updated_user) else {
         info!("Cannot generate jwt");
         return generic_error;
     };
@@ -195,7 +199,7 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     };
 
     // after successfully add user, sent the JWT to access to the service
-    let Ok(jwt) = Database::generate_jwt(&new_user) else {
+    let Ok(jwt) = auth::JwtClaims::generate_jwt(&new_user) else {
         return generic_error;
     };
 
@@ -212,7 +216,7 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
     );
     let success = status::Custom(Status::Ok, "File successfully created".to_string());
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return generic_error;
     };
 
@@ -238,7 +242,7 @@ pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> stat
         "You are not authorized to perform this action".to_string(),
     );
 
-    let Ok(_) = Database::verify_token(auth_token) else {
+    let Ok(_) = auth::JwtClaims::verify_token(auth_token) else {
         return generic_error;
     };
 
@@ -262,7 +266,7 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return generic_error;
     };
 
@@ -294,7 +298,7 @@ pub fn revoke_access(auth_token: &str, sharing: &str) -> status::Custom<String> 
 
     let shares: Sharing = serde_json::from_str(sharing).unwrap();
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return generic_error;
     };
 
@@ -319,7 +323,7 @@ pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     );
 
     let success = status::Custom(Status::Ok, "Directory successfully created".to_string());
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return generic_error;
     };
 
@@ -340,7 +344,7 @@ pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return unauthorized_access;
     };
 
@@ -363,7 +367,7 @@ pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<S
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return unauthorized_access;
     };
 
@@ -386,7 +390,7 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return unauthorized_access;
     };
 
@@ -427,7 +431,7 @@ pub fn get_shared_children(
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
 
-    let Ok(jwt) = Database::verify_token(auth_token) else {
+    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
         return unauthorized_access;
     };
 
@@ -460,7 +464,7 @@ pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<S
 
     let root_tree: RootTree = serde_json::from_str(updated_tree).unwrap();
 
-    match Database::verify_token(auth_token) {
+    match auth::JwtClaims::verify_token(auth_token) {
         Ok(jwt) => {
             Database::update_tree(&jwt.sub.uid, &root_tree);
             return status::Custom(Status::Ok, "Tree updated successfully".to_string());
@@ -476,7 +480,7 @@ pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String
         "You are not authorized to perform this action".to_string(),
     );
 
-    let Ok(_) = Database::verify_token(auth_token) else {
+    let Ok(_) = auth::JwtClaims::verify_token(auth_token) else {
         return unauthorized_access;
     };
 

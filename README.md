@@ -13,3 +13,5 @@ The security whitepaper is available [here](https://maxime.chantemargue.ch/proje
 cargo run --release
 ```
 
+> [!CAUTION] 
+> This application is currently under refactoring, you may get some issue while executing it.
