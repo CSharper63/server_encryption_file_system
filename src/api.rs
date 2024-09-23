@@ -6,6 +6,7 @@ use rocket::*;
 use uuid::Uuid;
 
 use crate::models::auth;
+use crate::models::auth::JwtClaims;
 use crate::models::data_asset::Sharing;
 use crate::models::database::{Database, RootTree};
 use crate::models::fs_entity::FsEntity;
@@ -70,9 +71,9 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
     status::Custom(Status::Ok, jwt)
 }
 
-/// Authentication status: None
-#[get("/get_user?<auth_token>")]
-pub fn get_user(auth_token: &str) -> status::Custom<String> {
+/// Authentication enforced: true
+#[get("/get_user")]
+pub fn get_user(jwt: JwtClaims) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to fetch the user".to_string());
     let unauthorized_access = status::Custom(
         Status::Unauthorized,
@@ -80,17 +81,6 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
     );
 
     log!(log::private::Level::Info, "try getting user");
-
-    // must check the auth key
-    // must be encoded in base58
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        log!(
-            log::private::Level::Error,
-            "get_user, JWT invalid, uneverified access"
-        );
-
-        return unauthorized_access;
-    };
 
     // convert body to struct
     let Ok(user) = Database::get_user_by_id(&jwt.sub.uid) else {
@@ -101,13 +91,14 @@ pub fn get_user(auth_token: &str) -> status::Custom<String> {
     return status::Custom(Status::Ok, serde_json::to_string(&user).unwrap());
 }
 
+/// Authentication enforced: true
 #[post(
-    "/auth/update_password?<auth_token>&<former_auth_key>",
+    "/auth/update_password?<former_auth_key>",
     format = "json",
     data = "<updated_user>"
 )]
 pub fn post_update_password(
-    auth_token: &str,
+    jwt: JwtClaims,
     updated_user: &str,
     former_auth_key: &str,
 ) -> status::Custom<String> {
@@ -123,11 +114,6 @@ pub fn post_update_password(
     // convert body to struct
     let Ok(mut updated_user): Result<User, _> = serde_json::from_str(updated_user) else {
         return json_error;
-    };
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        info!("User invalid token");
-        return generic_error;
     };
 
     let Ok(dbuser) = Database::get_user_by_id(&jwt.sub.uid) else {
@@ -208,17 +194,13 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
 
 // when creating a file, the content won't be added in the metadata tree, the content will be directly stored in the file itself
 // so when the user log in his session, it fetch is whole tree which contains only the tree with each encrypted key. If the user the
-#[post("/file/create?<auth_token>", data = "<file_as_str>")]
-pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> {
+#[post("/file/create", data = "<file_as_str>")]
+pub fn post_file(jwt: JwtClaims, file_as_str: &str) -> status::Custom<String> {
     let generic_error = status::Custom(
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
     let success = status::Custom(Status::Ok, "File successfully created".to_string());
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return generic_error;
-    };
 
     let Ok(mut file): Result<FsEntity, _> = serde_json::from_str(file_as_str) else {
         return status::Custom(Status::BadRequest, "Please provide me a json".to_string());
@@ -235,16 +217,12 @@ pub fn post_file(auth_token: &str, file_as_str: &str) -> status::Custom<String> 
     }
 }
 
-#[get("/file/get_content?<auth_token>&<file_id>&<owner_id>")]
-pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> status::Custom<String> {
+#[get("/file/get_content?<file_id>&<owner_id>")]
+pub fn get_file_content(jwt: JwtClaims, file_id: &str, owner_id: &str) -> status::Custom<String> {
     let generic_error = status::Custom(
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
-
-    let Ok(_) = auth::JwtClaims::verify_token(auth_token) else {
-        return generic_error;
-    };
 
     let Ok(path) = Database::get_entity_path(owner_id, file_id) else {
         return generic_error;
@@ -259,16 +237,13 @@ pub fn get_file_content(auth_token: &str, file_id: &str, owner_id: &str) -> stat
     status::Custom(Status::Ok, bs58::encode(contents).into_string())
 }
 
-#[post("/share?<auth_token>", format = "json", data = "<sharing>")]
-pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
+#[post("/share", format = "json", data = "<sharing>")]
+pub fn post_share(jwt: JwtClaims, sharing: &str) -> status::Custom<String> {
     let share: Sharing = serde_json::from_str(sharing).unwrap();
     let generic_error = status::Custom(
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return generic_error;
-    };
 
     if share.owner_id != jwt.sub.uid {
         return generic_error;
@@ -289,18 +264,14 @@ pub fn post_share(auth_token: &str, sharing: &str) -> status::Custom<String> {
     return success;
 }
 
-#[post("/revoke_share?<auth_token>", format = "json", data = "<sharing>")]
-pub fn revoke_access(auth_token: &str, sharing: &str) -> status::Custom<String> {
+#[post("/revoke_share", format = "json", data = "<sharing>")]
+pub fn revoke_access(jwt: JwtClaims, sharing: &str) -> status::Custom<String> {
     let generic_error = status::Custom(
         Status::BadRequest,
         "You are not authorized to perform this action".to_string(),
     );
 
     let shares: Sharing = serde_json::from_str(sharing).unwrap();
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return generic_error;
-    };
 
     if jwt.sub.uid != shares.owner_id {
         return generic_error;
@@ -314,8 +285,8 @@ pub fn revoke_access(auth_token: &str, sharing: &str) -> status::Custom<String> 
     return success;
 }
 
-#[post("/dir/create?<auth_token>", format = "json", data = "<dir_as_str>")]
-pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
+#[post("/dir/create", format = "json", data = "<dir_as_str>")]
+pub fn post_dir(jwt: JwtClaims, dir_as_str: &str) -> status::Custom<String> {
     let mut new_dir: FsEntity = serde_json::from_str(dir_as_str).unwrap();
     let generic_error = status::Custom(
         Status::BadRequest,
@@ -323,9 +294,6 @@ pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     );
 
     let success = status::Custom(Status::Ok, "Directory successfully created".to_string());
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return generic_error;
-    };
 
     if new_dir.create(&jwt.sub.uid) {
         return success;
@@ -334,19 +302,10 @@ pub fn post_dir(auth_token: &str, dir_as_str: &str) -> status::Custom<String> {
     }
 }
 
-#[get("/get_my_tree?<auth_token>")]
-pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
-    let unauthorized_access = status::Custom(
-        Status::Unauthorized,
-        "You are not authorized to perform this action".to_string(),
-    );
-
+#[get("/get_my_tree")]
+pub async fn get_my_tree(jwt: JwtClaims) -> status::Custom<String> {
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return unauthorized_access;
-    };
 
     let Ok(tree) = Database::get_root_tree(&jwt.sub.uid) else {
         return something_went_wrong;
@@ -357,19 +316,10 @@ pub async fn get_my_tree(auth_token: &str) -> status::Custom<String> {
     return status::Custom(Status::Ok, tree_str);
 }
 
-#[get("/dirs/get_children?<auth_token>&<parent_id>")]
-pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<String> {
-    let unauthorized_access = status::Custom(
-        Status::Unauthorized,
-        "You are not authorized to perform this action".to_string(),
-    );
-
+#[get("/dirs/get_children?<parent_id>")]
+pub async fn get_children(jwt: JwtClaims, parent_id: &str) -> status::Custom<String> {
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return unauthorized_access;
-    };
 
     let Ok(list_children) = Database::get_children(&jwt.sub.uid, parent_id) else {
         return something_went_wrong;
@@ -379,8 +329,8 @@ pub async fn get_children(auth_token: &str, parent_id: &str) -> status::Custom<S
     return status::Custom(Status::Ok, tree_str);
 }
 
-#[get("/get_shared_entity?<auth_token>", format = "json", data = "<shares>")]
-pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom<String> {
+#[get("/get_shared_entity", format = "json", data = "<shares>")]
+pub async fn get_shared_entity(jwt: JwtClaims, shares: &str) -> status::Custom<String> {
     let unauthorized_access = status::Custom(
         Status::Unauthorized,
         "You are not authorized to perform this action".to_string(),
@@ -389,10 +339,6 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
 
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return unauthorized_access;
-    };
 
     let Ok(has_access) = Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
     else {
@@ -412,12 +358,12 @@ pub async fn get_shared_entity(auth_token: &str, shares: &str) -> status::Custom
 }
 
 #[get(
-    "/dirs/get_shared_children?<auth_token>&<sub_entity_id>",
+    "/dirs/get_shared_children?<sub_entity_id>",
     format = "json",
     data = "<shares>"
 )]
 pub fn get_shared_children(
-    auth_token: &str,
+    jwt: JwtClaims,
     shares: &str,
     sub_entity_id: &str,
 ) -> status::Custom<String> {
@@ -430,10 +376,6 @@ pub fn get_shared_children(
 
     let something_went_wrong =
         status::Custom(Status::BadRequest, "Something went wrong".to_string());
-
-    let Ok(jwt) = auth::JwtClaims::verify_token(auth_token) else {
-        return unauthorized_access;
-    };
 
     let Ok(has_access) = Database::has_access_to_entity(&jwt.clone().sub.uid, &shares.entity_uid)
     else {
@@ -455,35 +397,16 @@ pub fn get_shared_children(
     return status::Custom(Status::Ok, tree_str);
 }
 
-#[post("/tree/update?<auth_token>", format = "json", data = "<updated_tree>")]
-pub async fn post_tree(auth_token: &str, updated_tree: &str) -> status::Custom<String> {
-    let unauthorized_access = status::Custom(
-        Status::Unauthorized,
-        "You are not authorized to perform this action".to_string(),
-    );
-
+#[post("/tree/update", format = "json", data = "<updated_tree>")]
+pub async fn post_tree(jwt: JwtClaims, updated_tree: &str) -> status::Custom<String> {
     let root_tree: RootTree = serde_json::from_str(updated_tree).unwrap();
 
-    match auth::JwtClaims::verify_token(auth_token) {
-        Ok(jwt) => {
-            Database::update_tree(&jwt.sub.uid, &root_tree);
-            return status::Custom(Status::Ok, "Tree updated successfully".to_string());
-        }
-        Err(_) => return unauthorized_access,
-    }
+    Database::update_tree(&jwt.sub.uid, &root_tree);
+    return status::Custom(Status::Ok, "Tree updated successfully".to_string());
 }
 
-#[get("/auth/get_public_key?<auth_token>&<username>")]
-pub fn get_public_key(auth_token: &str, username: &str) -> status::Custom<String> {
-    let unauthorized_access = status::Custom(
-        Status::Unauthorized,
-        "You are not authorized to perform this action".to_string(),
-    );
-
-    let Ok(_) = auth::JwtClaims::verify_token(auth_token) else {
-        return unauthorized_access;
-    };
-
+#[get("/auth/get_public_key?<username>")]
+pub fn get_public_key(jwt: JwtClaims, username: &str) -> status::Custom<String> {
     let Ok(public_key_material) = Database::get_public_key(username) else {
         return status::Custom(
             Status::NotFound,

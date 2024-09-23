@@ -1,11 +1,16 @@
 use jsonwebtoken::{
     decode, encode, get_current_timestamp, Algorithm, DecodingKey, EncodingKey, Header, Validation,
 };
+use rocket::{
+    http::Status,
+    request::{self, FromRequest, Outcome},
+    Request,
+};
 use serde::{Deserialize, Serialize};
 
 use super::user::User;
 
-// !! THIS MUST BE SET IN ENV VARIABLE AND NOT PUSHED IN PROD ENV LIKE THIS
+// !! THIS MUST BE SET IN SECRET ENV VARIABLE AND NOT PUSHED IN PROD ENV LIKE THIS
 const JWT_SECRET_KEY: &str = "this_is_my_secret_symm_key";
 
 /// JWT Structures
@@ -51,6 +56,29 @@ impl JwtClaims {
         };
 
         Ok(decoded.claims)
+    }
+}
+
+#[derive(Debug)]
+pub enum AuthError {
+    Invalid,
+    Missing,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for JwtClaims {
+    type Error = AuthError;
+
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
+        let Some(token) = req.headers().get_one("Bearer") else {
+            return Outcome::Error((Status::Unauthorized, AuthError::Missing));
+        };
+
+        let Ok(jwt) = JwtClaims::verify_token(token) else {
+            return Outcome::Error((Status::Unauthorized, AuthError::Missing));
+        };
+
+        Outcome::Success(jwt)
     }
 }
 
