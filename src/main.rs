@@ -1,7 +1,6 @@
 use api::*;
 use rocket::shield::{Hsts, Shield};
 use rocket::*;
-use rocket_dyn_templates::Template;
 //use views::*;
 
 pub mod api;
@@ -15,7 +14,6 @@ fn rocket() -> Rocket<Build> {
     let max_age_two_years = rocket::time::Duration::new(63072000, 0);
 
     rocket::build()
-        .attach(Template::fairing())
         .attach(Shield::default().enable(Hsts::Enable(max_age_two_years))) // HSTS force HTTPS
         .mount(
             "/",

@@ -8,14 +8,12 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
-rocket = { version = "0.5.0-rc.4", features = ["tls"] }
+rocket = { version = "0.5", features = ["tls"] }
 jsonwebtoken = "9.2.0"
 bs58 = "0.5.0"
 serde_with = "3.4.0"
-blake2 = "0.10.6"
 rocket-multipart-form-data = "0.10.7"
-hmac = "0.12.1"
-sha2 = "0.10.8"
+blake3 = "1.5.4"
 [dependencies.uuid]
 version = "1.6.1"
 features = [

@@ -1,17 +1,14 @@
 use log::private::{info, log};
 use models::{Database, FsEntity, RootTree, Sharing, User};
 
-use hmac::{Hmac, Mac};
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::*;
-use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::models;
 
-const CRYPTO_PEPPER: &str = "this_is_my_pepper"; // !! POC only, must be stored in HSM
-type HmacSha256 = Hmac<Sha256>;
+const CRYPTO_PEPPER: &[u8; 32] = b"01234567891011121314151617181920";
 
 /// Authentication status: None
 #[get("/auth/get_salt?<username>")]
@@ -48,7 +45,7 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
         return generic_error;
     };
 
-    let auth_key = generate_hmac(auth_key);
+    let auth_key = generate_mac(auth_key);
 
     // must check the auth key
     // must be encoded in base58
@@ -134,14 +131,14 @@ pub fn post_update_password(
         return generic_error;
     };
 
-    let auth_key = generate_hmac(former_auth_key);
+    let auth_key = generate_mac(former_auth_key);
 
     if dbuser.auth_key != auth_key {
         return auth_error;
     }
 
     // encode in base58, then verify the stored mac
-    updated_user.auth_key = generate_hmac(updated_user.auth_key.as_str());
+    updated_user.auth_key = generate_mac(updated_user.auth_key.as_str());
 
     // add user in db
     let Ok(_) = Database::change_password(updated_user.clone()) else {
@@ -181,16 +178,16 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
 
     // encode in base58, then verify the stored mac
-    new_user.auth_key = generate_hmac(new_user.auth_key.as_str());
+    new_user.auth_key = generate_mac(new_user.auth_key.as_str());
 
-    info!("hmac: {}", new_user.auth_key);
+    info!("mac: {}", new_user.auth_key);
 
     // add user in db
     let Ok(_) = Database::add_user(&new_user) else {
         return generic_error;
     };
 
-    info!("hmac: {}", new_user.auth_key);
+    info!("mac: {}", new_user.auth_key);
 
     // init root tree
     let Ok(_) = Database::init_root_tree(new_user.uid.as_str()) else {
@@ -500,16 +497,12 @@ fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// return HMAC256 in base58 of a base58 value
-fn generate_hmac(val: &str) -> String {
+/// return MAC computed with blake3
+fn generate_mac(val: &str) -> String {
     let decoded_auth_key = bs58::decode(val).into_vec().unwrap();
 
-    let mut mac_auth_key = HmacSha256::new_from_slice(CRYPTO_PEPPER.as_bytes())
-        .expect("HMAC can take key of any size");
-    // create mac with the auth key and the paper
-    mac_auth_key.update(decoded_auth_key.as_slice());
-    let computed_mac = mac_auth_key.finalize();
-    let computed_mac: Vec<u8> = computed_mac.into_bytes().to_vec();
+    let mac_auth_key = blake3::keyed_hash(CRYPTO_PEPPER, &decoded_auth_key);
+    let computed_mac = mac_auth_key.as_bytes().to_vec();
 
     // encode in base58, then verify the stored mac
     bs58::encode(computed_mac).into_string()
