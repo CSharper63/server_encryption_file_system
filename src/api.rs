@@ -75,10 +75,6 @@ pub fn get_sign_in(username: &str, auth_key: &str) -> status::Custom<String> {
 #[get("/get_user")]
 pub fn get_user(jwt: JwtClaims) -> status::Custom<String> {
     let generic_error = status::Custom(Status::BadRequest, "Unable to fetch the user".to_string());
-    let unauthorized_access = status::Custom(
-        Status::Unauthorized,
-        "You are not authorized to perform this action".to_string(),
-    );
 
     log!(log::private::Level::Info, "try getting user");
 
@@ -164,8 +160,6 @@ pub fn get_sign_up(new_user: &str) -> status::Custom<String> {
     let Err(_) = Database::get_user(&new_user.username) else {
         return generic_error;
     };
-
-    // decode the auth key and pass it through a mac verified by a crypto pepper, avoid secret leak in case of database leaks
 
     // encode in base58, then verify the stored mac
     new_user.auth_key = generate_mac(new_user.auth_key.as_str());

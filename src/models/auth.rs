@@ -70,9 +70,11 @@ impl<'r> FromRequest<'r> for JwtClaims {
     type Error = AuthError;
 
     async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        let Some(token) = req.headers().get_one("Bearer") else {
+        let Some(token) = req.headers().get_one("authorization") else {
             return Outcome::Error((Status::Unauthorized, AuthError::Missing));
         };
+
+        let token = token.split_whitespace().nth(1).unwrap_or("");
 
         let Ok(jwt) = JwtClaims::verify_token(token) else {
             return Outcome::Error((Status::Unauthorized, AuthError::Missing));
